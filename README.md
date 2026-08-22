@@ -37,12 +37,27 @@ Service Go unique, image Docker `FROM scratch`, déployable n'importe où.
 |----------|--------|-------------|
 | `PORT` | `8080` | Port d'écoute |
 | `CACHE_TTL` | `30s` | Durée du cache anti-spam |
-| `OPENCODE_GO_API_KEY` | — | Clé Go #1 (requise) |
-| `OPENCODE_GO_API_KEY_R` | — | Clé Go #2 (optionnelle) |
-| `OPENCODE_GO_API_KEY_A` | — | Clé Go #3 (optionnelle) |
-| `OPENCODE_GO_API_KEY_N` | — | Clé Go #4 (optionnelle) |
+| `OPENCODE_GO_API_KEY*` | — | Clés API OpenCode Go (au moins une requise) |
 
-Au moins une clé doit être définie. Les labels affichés sont "Key 1", "Key 2", etc.
+### Clés API — découverte dynamique
+
+Le dashboard détecte **automatiquement** toutes les variables d'environnement qui commencent par `OPENCODE_GO_API_KEY`. Aucune modification de code n'est nécessaire pour ajouter ou supprimer un abonnement.
+
+Exemples :
+
+```bash
+OPENCODE_GO_API_KEY=sk-...          # Label affiché : "Main"
+OPENCODE_GO_API_KEY_R=sk-...        # Label affiché : "R"
+OPENCODE_GO_API_KEY_A=sk-...        # Label affiché : "A"
+OPENCODE_GO_API_KEY_ALICE=sk-...    # Label affiché : "ALICE"
+```
+
+- Le suffixe après `OPENCODE_GO_API_KEY_` devient le label (en majuscules)
+- La clé sans suffixe (`OPENCODE_GO_API_KEY`) a le label "Main"
+- Les clés vides ou whitespace-only sont ignorées
+- L'ordre d'affichage est alphabétique par nom de variable
+
+Au moins une clé doit être définie.
 
 ## Développement local
 
@@ -70,10 +85,6 @@ GitHub Actions (`.github/workflows/build.yml`) :
 - Build Docker multi-arch (amd64 + arm64)
 - Push sur `ghcr.io/rjullien/opencode-usage-tracker`
 - Tags : `main`, `vX.Y.Z`, SHA court
-
-## Personnalisation des labels
-
-Par défaut les clés sont affichées "Key 1", "Key 2", etc. Pour personnaliser, modifier `internal/opencode/keys.go`.
 
 ## License
 
