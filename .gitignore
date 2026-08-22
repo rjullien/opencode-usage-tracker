@@ -1,0 +1,19 @@
+# Binaries
+/dashboard
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Env
+.env
+cookies.txt
+
+# Old python
+__pycache__/
+*.pyc
