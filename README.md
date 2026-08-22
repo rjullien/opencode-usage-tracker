@@ -1,6 +1,18 @@
 # opencode-usage-tracker
 
-Dashboard web de suivi des **quotas serveur OpenCode Go** (rolling 5h / weekly / monthly) pour plusieurs clés API.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Public](https://img.shields.io/badge/status-public-2ea44f)
+
+Suivi des **quotas serveur OpenCode Go** (rolling 5h / weekly / monthly) pour plusieurs clés API.
+
+Deux outils complémentaires dans ce repo :
+
+| Outil | Description | Stack |
+|-------|-------------|-------|
+| 🖥️ **Dashboard web** | Suivi multi-clés avec barres de progression | Go (binaire unique, `FROM scratch`) |
+| 🖥️ **CLI `opencode_usage.py`** | Quotas instantanés en terminal, sortie JSON pour cron | Python 3 stdlib pure |
+
+## 🖥️ Dashboard web
 
 Service Go unique, image Docker `FROM scratch`, déployable n'importe où.
 
@@ -39,27 +51,12 @@ Service Go unique, image Docker `FROM scratch`, déployable n'importe où.
 |----------|--------|-------------|
 | `PORT` | `8080` | Port d'écoute |
 | `CACHE_TTL` | `30s` | Durée du cache anti-spam |
-| `OPENCODE_GO_API_KEY*` | — | Clés API OpenCode Go (au moins une requise) |
+| `OPENCODE_GO_API_KEY` | — | Clé Go #1 (requise) |
+| `OPENCODE_GO_API_KEY_R` | — | Clé Go #2 (optionnelle) |
+| `OPENCODE_GO_API_KEY_A` | — | Clé Go #3 (optionnelle) |
+| `OPENCODE_GO_API_KEY_N` | — | Clé Go #4 (optionnelle) |
 
-### Clés API — découverte dynamique
-
-Le dashboard détecte **automatiquement** toutes les variables d'environnement qui commencent par `OPENCODE_GO_API_KEY`. Aucune modification de code n'est nécessaire pour ajouter ou supprimer un abonnement.
-
-Exemples :
-
-```bash
-OPENCODE_GO_API_KEY=sk-...          # Label affiché : "Main"
-OPENCODE_GO_API_KEY_R=sk-...        # Label affiché : "R"
-OPENCODE_GO_API_KEY_A=sk-...        # Label affiché : "A"
-OPENCODE_GO_API_KEY_ALICE=sk-...    # Label affiché : "ALICE"
-```
-
-- Le suffixe après `OPENCODE_GO_API_KEY_` devient le label (en majuscules)
-- La clé sans suffixe (`OPENCODE_GO_API_KEY`) a le label "Main"
-- Les clés vides ou whitespace-only sont ignorées
-- L'ordre d'affichage est alphabétique par nom de variable
-
-Au moins une clé doit être définie.
+Au moins une clé doit être définie. Les labels affichés sont "Key 1", "Key 2", etc.
 
 ## Développement local
 
@@ -87,6 +84,35 @@ GitHub Actions (`.github/workflows/build.yml`) :
 - Build Docker multi-arch (amd64 + arm64)
 - Push sur `ghcr.io/rjullien/opencode-usage-tracker`
 - Tags : `main`, `vX.Y.Z`, SHA court
+
+## 🖥️ CLI `opencode_usage.py`
+
+Quotas instantanés en terminal, sans dépendance (Python 3 stdlib). Scrape l'état SSR de la
+page workspace opencode.ai (aucune API publique n'existe encore — cf. issue #31084).
+
+```bash
+# cookie inline (le plus simple)
+python3 opencode_usage.py -w <WORKSPACE_ID> -c "Fe26.2*..."
+
+# fichier cookie (format Netscape ou ligne simple `auth=...`)
+python3 opencode_usage.py -w <WORKSPACE_ID> -f ~/.config/opencode/cookies.txt
+
+# auto-détection du cookie Firefox (profil par défaut)
+python3 opencode_usage.py -w <WORKSPACE_ID>
+
+# JSON brut pour scripting / cron
+python3 opencode_usage.py -w <WORKSPACE_ID> --json
+```
+
+Variables d'environnement : `OPENCODE_WORKSPACE_ID`, `OPENCODE_COOKIE`.
+
+Sortie : barres colorées `⏱ rolling 5h / 📅 weekly / 🗓 monthly` avec % et heure de reset.
+
+⚠️ Le cookie de session expire — ré-auth sur opencode.ai puis re-copier la valeur `auth`.
+
+## Personnalisation des labels
+
+Par défaut les clés sont affichées "Key 1", "Key 2", etc. Pour personnaliser, modifier `internal/opencode/keys.go`.
 
 ## License
 
