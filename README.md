@@ -4,6 +4,8 @@ Dashboard web de suivi des **quotas serveur OpenCode Go** (rolling 5h / weekly /
 
 Service Go unique, image Docker `FROM scratch`, déployable n'importe où.
 
+**URL** : https://oc-board.bapttf.com (protégé par Authelia, accès famille)
+
 ## Architecture
 
 ```
