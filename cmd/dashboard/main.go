@@ -1,7 +1,6 @@
 package main
 
 import (
-	"embed"
 	"log"
 	"net/http"
 	"os"
@@ -10,9 +9,6 @@ import (
 	"github.com/rjullien/opencode-usage-tracker/internal/handler"
 	"github.com/rjullien/opencode-usage-tracker/internal/opencode"
 )
-
-//go:embed templates
-var templatesFS embed.FS
 
 func main() {
 	port := os.Getenv("PORT")
@@ -39,7 +35,7 @@ func main() {
 	client := opencode.NewClient(15 * time.Second)
 	fetcher := opencode.NewFetcher(client, keys, cacheTTL)
 
-	h := handler.New(templatesFS, fetcher)
+	h := handler.New(fetcher)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.Dashboard)

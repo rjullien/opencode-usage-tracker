@@ -19,9 +19,9 @@ type Fetcher struct {
 	keys     []KeyConfig
 	cacheTTL time.Duration
 
-	mu       sync.RWMutex
-	cache    []AgentStatus
-	cacheAt  time.Time
+	mu      sync.RWMutex
+	cache   []AgentStatus
+	cacheAt time.Time
 }
 
 // NewFetcher creates a Fetcher with cache TTL.
