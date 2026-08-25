@@ -1,4 +1,4 @@
-FROM golang:1.23-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.23-alpine AS builder
 
 WORKDIR /src
 
@@ -9,8 +9,12 @@ RUN go mod download
 # Copy source
 COPY . .
 
-# Build static binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+# Build a static binary for the architecture being targeted. buildx supplies
+# TARGETOS/TARGETARCH per platform in the manifest; hardcoding amd64 here used to
+# put an amd64 binary inside the arm64 image, which could not execute at all.
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
     -ldflags="-s -w" \
     -o /dashboard \
     ./cmd/dashboard

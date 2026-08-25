@@ -26,8 +26,67 @@ jobs:
       - name: Run tests
         run: go test ./... -v -count=1 -timeout=30s
 
-  build:
+  # Runs the real scratch image. Catches what unit tests structurally cannot: the
+  # runtime image has no /usr/share/zoneinfo, and the Go toolchain's own
+  # zoneinfo.zip masks a missing time/tzdata import during `go test`.
+  smoke:
     needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build the runtime image
+        run: docker build -t oc-smoke:ci .
+
+      - name: Start the container
+        run: |
+          docker run -d --name oc-smoke -p 8080:8080 \
+            -e OPENCODE_GO_API_KEY=sk-invalid-smoke-test \
+            oc-smoke:ci
+
+      - name: Wait for /health
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -fsS localhost:8080/health | grep -q '"ok"'; then
+              echo "healthy"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the container never became healthy"
+          docker logs oc-smoke
+          exit 1
+
+      - name: The scratch image must resolve Europe/Paris
+        run: |
+          # The key is invalid on purpose: the dashboard still renders its header,
+          # which carries the local time. Bracket the reading to stay correct
+          # across an hour boundary.
+          before=$(TZ=Europe/Paris date +%H:)
+          page=$(curl -fsS --max-time 40 localhost:8080/)
+          after=$(TZ=Europe/Paris date +%H:)
+
+          rendered=$(printf '%s' "$page" | grep -o 'abonnement(s) • [0-9][0-9]:[0-9][0-9]' | head -1)
+          echo "rendu : $rendered (attendu ${before}xx en heure de Paris, UTC est $(TZ=UTC date +%H:)xx)"
+
+          if printf '%s' "$rendered" | grep -qE "• (${before%:}|${after%:}):"; then
+            echo "timezone OK"
+          else
+            echo "::error::hour outside Europe/Paris — is the time/tzdata import missing from the scratch image?"
+            exit 1
+          fi
+
+      - name: Container logs
+        if: always()
+        run: docker logs oc-smoke || true
+
+      - name: Clean up
+        if: always()
+        run: docker rm -f oc-smoke || true
+
+  build:
+    needs: [test, smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: read

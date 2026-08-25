@@ -10,9 +10,24 @@ import (
 
 const apiURL = "https://opencode.ai/zen/go/v1/usage"
 
+// Window kinds. Each kind has its own period-start rule, verified against real
+// API responses:
+//
+//	rolling — genuinely rolling; with zero usage the API returns now+5h, so no
+//	          period start can be derived.
+//	weekly  — calendar-aligned: every key resets at the same Monday 00:00 UTC.
+//	monthly — subscription anniversary: arbitrary day-of-month and time-of-day,
+//	          different for every key.
+const (
+	KindRolling = "rolling"
+	KindWeekly  = "weekly"
+	KindMonthly = "monthly"
+)
+
 // Window represents a single quota window (rolling, weekly, monthly).
 type Window struct {
 	Name     string    `json:"name"`
+	Kind     string    `json:"kind"`
 	Status   string    `json:"status"`
 	Percent  int       `json:"percent"`
 	ResetsAt time.Time `json:"resetsAt"`
@@ -97,14 +112,16 @@ func parseResponse(body []byte) ([]Window, error) {
 
 	var windows []Window
 
-	if w := resp.Usage.Rolling; w != nil {
-		windows = append(windows, toWindow("Rolling 5h", w))
+	// Monthly first: it is the window that actually constrains the month, and
+	// the one the dashboard leads with.
+	if w := resp.Usage.Monthly; w != nil {
+		windows = append(windows, toWindow("Monthly", KindMonthly, w))
 	}
 	if w := resp.Usage.Weekly; w != nil {
-		windows = append(windows, toWindow("Weekly", w))
+		windows = append(windows, toWindow("Weekly", KindWeekly, w))
 	}
-	if w := resp.Usage.Monthly; w != nil {
-		windows = append(windows, toWindow("Monthly", w))
+	if w := resp.Usage.Rolling; w != nil {
+		windows = append(windows, toWindow("Rolling 5h", KindRolling, w))
 	}
 
 	if len(windows) == 0 {
@@ -114,9 +131,10 @@ func parseResponse(body []byte) ([]Window, error) {
 	return windows, nil
 }
 
-func toWindow(name string, raw *windowRaw) Window {
+func toWindow(name, kind string, raw *windowRaw) Window {
 	w := Window{
 		Name:    name,
+		Kind:    kind,
 		Status:  raw.Status,
 		Percent: raw.Percent,
 	}

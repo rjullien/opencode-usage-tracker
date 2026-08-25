@@ -18,6 +18,64 @@ Service Go unique, image Docker `FROM scratch`, déployable n'importe où.
 
 **URL** : https://oc-board.bapttf.com (protégé par Authelia, accès famille)
 
+### Où on en est vs le reset
+
+Un pourcentage brut ne dit rien : 60% consommé est une alerte au 3ᵉ jour et un non-événement
+à 3 jours du reset. Le dashboard compare donc le **consommé** au **temps écoulé** dans la période.
+
+La barre porte deux informations : le remplissage est le consommé, le trait vertical marque le
+temps écoulé. Remplissage au-delà du trait = on brûle plus vite que le temps ne passe.
+
+La métrique principale est le nombre de **jours à sec** — les jours passés au plafond avant le
+reset, au rythme moyen actuel :
+
+```
+rythme       = consommé / jours écoulés
+mur          = jours restants avant d'atteindre 100%
+jours à sec  = (jours jusqu'au reset) − (jours jusqu'au mur)
+```
+
+| Feu | Règle |
+|-----|-------|
+| 🟢 dans le budget | 0 jour à sec, le quota tient jusqu'au reset |
+| 🟠 juste | jusqu'à 3 jours à sec, **ou** 80% déjà consommé |
+| 🔴 dérapage | plus de 3 jours à sec, **ou** 95% déjà consommé |
+
+Deux garde-fous :
+
+- **Début de période.** Sous 5% de période écoulée (~1,5 j sur un mois), une seule grosse session
+  projette un dépassement délirant. Le rouge issu du rythme est plafonné à orange ; le seuil
+  absolu peut toujours forcer le rouge.
+- **Fin de période.** Le calcul en jours se comprime mécaniquement vers zéro quand il ne reste
+  qu'un jour. Les seuils absolus (80% / 95%) portent alors l'alerte à eux seuls.
+
+Le **rolling 5h** est noté sur le consommé brut : à 90% on est bloqué tout de suite, la notion de
+rythme n'y a pas de sens. L'API renvoie d'ailleurs `resetsAt = now + 5h` quand la consommation est
+nulle, donc aucun début de période n'y est calculable.
+
+### Le feu global
+
+Le feu de l'ensemble est celui du **maillon faible**, pas une moyenne. Les quotas sont propres à
+chaque abonnement et ne se transfèrent pas : les points restants d'une clé ne peuvent pas servir à
+une autre. Les périodes sont en plus déphasées (une à 12% écoulée à côté d'une à 76%), ce qui rend
+toute projection agrégée dénuée de sens. Le consommé moyen reste affiché, mais à titre indicatif.
+
+### Fenêtres de quota
+
+Chaque fenêtre a sa propre règle de début de période, établie sur les réponses réelles de l'API :
+
+| Fenêtre | Début de période | Observation |
+|---------|------------------|-------------|
+| `monthly` | `resetsAt − 1 mois` | anniversaire d'abonnement : jour et heure arbitraires, propres à chaque clé |
+| `weekly` | `resetsAt − 7 jours` | calendaire : toutes les clés partagent le même lundi 00:00 UTC |
+| `rolling` | — | réellement glissante, aucun début dérivable |
+
+### Limite connue
+
+Le rythme est la **moyenne depuis le début de la période**, pas un rythme récent : le service ne
+conserve aucun historique. Une grosse semaine passée continue de peser sur la projection plusieurs
+jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
+
 ## Architecture
 
 ```
@@ -36,14 +94,31 @@ Service Go unique, image Docker `FROM scratch`, déployable n'importe où.
 - **Cache court** (30s par défaut) pour éviter de spammer l'API sur refresh rapides
 - **Pas de polling background** — zéro requête quand personne ne regarde
 - **Zéro dépendance** — stdlib Go + embed pour les templates
+- **Sans état** — le budget est dérivé à chaque requête de `percent` et `resetsAt`, rien n'est stocké
 
 ## Endpoints
 
 | Route | Description |
 |-------|-------------|
-| `GET /` | Dashboard HTML avec barres de progression |
-| `GET /api/usage` | JSON brut des quotas (pour intégration) |
+| `GET /` | Dashboard HTML : feu par abonnement + feu global |
+| `GET /api/usage` | JSON des quotas, enrichi du budget calculé |
 | `GET /health` | Health check (`{"status":"ok"}`) |
+
+`/api/usage` conserve les champs existants (`label`, `windows`, `error`, `fetchedAt`, et par fenêtre
+`name`, `status`, `percent`, `resetsAt`) et ajoute `level` ainsi qu'un objet `budget` :
+
+```json
+{
+  "name": "Monthly", "kind": "monthly", "percent": 28, "level": "red",
+  "budget": {
+    "valid": true, "periodDays": 31, "elapsedPct": 13, "consumedPct": 28,
+    "aheadPct": 15, "ratePerDay": 7.19, "allowedRatePerDay": 2.66,
+    "projectedPct": 223, "dryDays": 17.1, "earlyPeriod": false, "level": "red"
+  }
+}
+```
+
+`budget.valid` est `false` pour le rolling 5h, seule fenêtre sans début de période calculable.
 
 ## Variables d'environnement
 
@@ -51,12 +126,13 @@ Service Go unique, image Docker `FROM scratch`, déployable n'importe où.
 |----------|--------|-------------|
 | `PORT` | `8080` | Port d'écoute |
 | `CACHE_TTL` | `30s` | Durée du cache anti-spam |
-| `OPENCODE_GO_API_KEY` | — | Clé Go #1 (requise) |
-| `OPENCODE_GO_API_KEY_R` | — | Clé Go #2 (optionnelle) |
-| `OPENCODE_GO_API_KEY_A` | — | Clé Go #3 (optionnelle) |
-| `OPENCODE_GO_API_KEY_N` | — | Clé Go #4 (optionnelle) |
+| `OPENCODE_GO_API_KEY` | — | Clé Go, affichée « Main » (au moins une clé requise) |
+| `OPENCODE_GO_API_KEY_<SUFFIXE>` | — | Clé supplémentaire, affichée « SUFFIXE » |
 
-Au moins une clé doit être définie. Les labels affichés sont "Key 1", "Key 2", etc.
+Toute variable commençant par `OPENCODE_GO_API_KEY` est découverte automatiquement, et le label
+d'affichage est déduit du suffixe : `OPENCODE_GO_API_KEY_R` s'affiche « R »,
+`OPENCODE_GO_API_KEY_ALICE` s'affiche « Alice ». Ajouter ou retirer un abonnement ne demande
+aucune modification de code. L'ordre d'affichage suit le nom de la variable, pour rester stable.
 
 ## Développement local
 
@@ -80,10 +156,21 @@ Image : `ghcr.io/rjullien/opencode-usage-tracker:main`
 ## CI/CD
 
 GitHub Actions (`.github/workflows/build.yml`) :
-- Build Go pour vérification
-- Build Docker multi-arch (amd64 + arm64)
-- Push sur `ghcr.io/rjullien/opencode-usage-tracker`
-- Tags : `main`, `vX.Y.Z`, SHA court
+
+1. **`test`** — `go test ./...`
+2. **`smoke`** — construit l'image de runtime, la démarre et vérifie `/health` puis l'heure rendue.
+   Ce job attrape ce que les tests unitaires ne peuvent structurellement pas voir : l'image
+   `FROM scratch` n'a pas de `/usr/share/zoneinfo`, et le `zoneinfo.zip` livré avec la toolchain Go
+   masque un import `time/tzdata` manquant pendant `go test`.
+3. **`build`** — build Docker multi-arch (amd64 + arm64) et push sur
+   `ghcr.io/rjullien/opencode-usage-tracker`, tags `main`, `vX.Y.Z`, SHA court.
+
+Le binaire est compilé pour l'architecture ciblée via `TARGETARCH` fourni par buildx.
+
+### Déploiement
+
+L'image `:main` est suivie par ArgoCD Image Updater (`newest-build`) dans `BaptTF/vps-infra` :
+un merge sur `main` déclenche le build puis le déploiement, sans intervention sur les manifestes.
 
 ## 🖥️ CLI `opencode_usage.py`
 
@@ -109,10 +196,6 @@ Variables d'environnement : `OPENCODE_WORKSPACE_ID`, `OPENCODE_COOKIE`.
 Sortie : barres colorées `⏱ rolling 5h / 📅 weekly / 🗓 monthly` avec % et heure de reset.
 
 ⚠️ Le cookie de session expire — ré-auth sur opencode.ai puis re-copier la valeur `auth`.
-
-## Personnalisation des labels
-
-Par défaut les clés sont affichées "Key 1", "Key 2", etc. Pour personnaliser, modifier `internal/opencode/keys.go`.
 
 ## License
 
