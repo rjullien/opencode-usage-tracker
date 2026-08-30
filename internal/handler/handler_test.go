@@ -68,7 +68,12 @@ func newTestHandler(t *testing.T) *Handler {
 	}
 
 	client := opencode.NewClientWithURL(5*time.Second, srv.URL)
-	h := New(opencode.NewFetcher(client, keys, time.Minute))
+	h := New(opencode.NewFetcher(client, keys, time.Minute), stubWeights{
+		"OPENCODE_GO_API_KEY":   1,
+		"OPENCODE_GO_API_KEY_A": 0,
+		"OPENCODE_GO_API_KEY_N": 1,
+		"OPENCODE_GO_API_KEY_R": 1,
+	})
 	h.now = func() time.Time { return captureNow }
 	return h
 }
@@ -252,6 +257,19 @@ type stubPoller []opencode.AgentStatus
 
 func (s stubPoller) Statuses() []opencode.AgentStatus { return s }
 
+// stubWeights is a deterministic WeightsSource for rendering tests.
+type stubWeights map[string]float64
+
+func (s stubWeights) WeightsByEnv() (map[string]float64, error) { return s, nil }
+
+// failingWeights exercises the degradation path: Bifrost down must not break
+// the page, weights simply render as unknown.
+type failingWeights struct{}
+
+func (failingWeights) WeightsByEnv() (map[string]float64, error) {
+	return nil, fmt.Errorf("bifrost injoignable")
+}
+
 func TestHealth(t *testing.T) {
 	rec := httptest.NewRecorder()
 	newTestHandler(t).Health(rec, httptest.NewRequest(http.MethodGet, "/health", nil))
@@ -289,6 +307,94 @@ func TestPageAvoidsFontDependentGlyphs(t *testing.T) {
 		}
 		seen[r] = true
 		t.Errorf("page uses font-dependent glyph %q (U+%04X)", r, r)
+	}
+}
+
+// Each card states where the subscription's key currently stands in Bifrost
+// routing: its load-balancing weight, or "hors rotation" when the weight is 0.
+func TestDashboardRendersWeights(t *testing.T) {
+	h := newTestHandler(t)
+	h.weights = stubWeights{
+		"OPENCODE_GO_API_KEY":   1,
+		"OPENCODE_GO_API_KEY_A": 0,
+		"OPENCODE_GO_API_KEY_N": 1,
+		"OPENCODE_GO_API_KEY_R": 1,
+	}
+
+	body := renderDashboard(t, h)
+
+	mustContain(t, body, "routage Bifrost", "poids 1,0", "hors rotation")
+	// A is out of rotation: its weight line must carry the red warning class.
+	if !strings.Contains(body, `red">hors rotation`) {
+		t.Error("weight line for a weight-0 key is not highlighted red")
+	}
+}
+
+// Bifrost being unreachable must not break the page: the routing line reads
+// "poids inconnu" and every other signal stays intact.
+func TestDashboardWeightsUnknownWhenBifrostDown(t *testing.T) {
+	h := newTestHandler(t)
+	h.weights = failingWeights{}
+
+	body := renderDashboard(t, h)
+
+	mustContain(t, body, "routage Bifrost", "poids inconnu", "Consommé moyen du parc")
+}
+
+// The API exposes the current routing weight per subscription, and omits the
+// field entirely when the weight is unknown rather than reporting a zero.
+func TestAPIUsageExposesWeight(t *testing.T) {
+	rec := httptest.NewRecorder()
+	newTestHandler(t).APIUsage(rec, httptest.NewRequest(http.MethodGet, "/api/usage", nil))
+
+	var agents []AgentView
+	if err := json.Unmarshal(rec.Body.Bytes(), &agents); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	byLabel := map[string]AgentView{}
+	for _, a := range agents {
+		byLabel[a.Label] = a
+	}
+
+	main, ok := byLabel["Main"]
+	if !ok {
+		t.Fatal("Main agent missing")
+	}
+	if main.Weight == nil || *main.Weight != 1 {
+		t.Errorf("Main weight = %v, want 1", main.Weight)
+	}
+
+	a, ok := byLabel["A"]
+	if !ok {
+		t.Fatal("A agent missing")
+	}
+	if a.Weight == nil || *a.Weight != 0 {
+		t.Errorf("A weight = %v, want 0 (hors rotation)", a.Weight)
+	}
+}
+
+// With no matching env var (status built by hand, no Bifrost source), the
+// weight stays unknown and must not be serialized.
+func TestAPIUsageOmitsUnknownWeight(t *testing.T) {
+	rec := httptest.NewRecorder()
+	h := newTestHandler(t)
+	h.poller = stubPoller{{Label: "Main", FetchedAt: captureNow}}
+
+	h.APIUsage(rec, httptest.NewRequest(http.MethodGet, "/api/usage", nil))
+
+	var agents []AgentView
+	if err := json.Unmarshal(rec.Body.Bytes(), &agents); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("agents = %d, want 1", len(agents))
+	}
+	if agents[0].Weight != nil {
+		t.Errorf("weight = %v, want nil (unknown)", agents[0].Weight)
+	}
+	if strings.Contains(rec.Body.String(), `"weight"`) {
+		t.Error("unknown weight must be omitted from the JSON payload")
 	}
 }
 

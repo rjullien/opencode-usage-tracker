@@ -126,6 +126,7 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 |----------|--------|-------------|
 | `PORT` | `8080` | Port d'écoute |
 | `CACHE_TTL` | `30s` | Durée du cache anti-spam |
+| `BIFROST_URL` | `http://bifrost.openclaw.svc.cluster.local:8080` | Base URL du gateway Bifrost (lecture seule des poids de routage) |
 | `OPENCODE_GO_API_KEY` | — | Clé Go, affichée « Main » (au moins une clé requise) |
 | `OPENCODE_GO_API_KEY_<SUFFIXE>` | — | Clé supplémentaire, affichée « SUFFIXE » |
 

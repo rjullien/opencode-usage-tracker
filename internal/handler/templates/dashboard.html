@@ -179,6 +179,13 @@
     padding: 0.2rem 0.45rem; margin-top: 0.2rem; align-self: flex-start;
   }
 
+  /* Ligne de routage : séparée des fenêtres pour ne pas être confondue
+     avec un quota. */
+  .routage {
+    margin-top: 0.85rem; padding-top: 0.6rem;
+    border-top: 1px dashed var(--border);
+  }
+
   .error-msg {
     color: var(--red); font-size: 0.85rem; padding: 0.75rem;
     background: var(--red-bg); border-radius: 8px;
@@ -290,6 +297,11 @@
           {{end}}
         {{end}}
       {{end}}
+
+      <div class="line muted routage">
+        <span>routage Bifrost</span>
+        <span class="num {{if weightZero .Weight}}red{{end}}">{{weightText .Weight}}</span>
+      </div>
 
       <div class="fetch-time">relevé {{fmtTime .FetchedAt}}</div>
     </div>

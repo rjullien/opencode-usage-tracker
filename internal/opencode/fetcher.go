@@ -8,6 +8,7 @@ import (
 // AgentStatus holds the latest usage data for one agent/key.
 type AgentStatus struct {
 	Label     string    `json:"label"`
+	EnvVar    string    `json:"-"` // env var holding the key; matches Bifrost weight refs
 	Windows   []Window  `json:"windows,omitempty"`
 	Error     string    `json:"error,omitempty"`
 	FetchedAt time.Time `json:"fetchedAt"`
@@ -66,6 +67,7 @@ func (f *Fetcher) fetchAll() []AgentStatus {
 			windows, err := f.client.FetchUsage(kc.Key)
 			status := AgentStatus{
 				Label:     kc.Label,
+				EnvVar:    kc.EnvVar,
 				FetchedAt: time.Now(),
 			}
 			if err != nil {

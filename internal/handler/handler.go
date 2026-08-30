@@ -43,17 +43,27 @@ type Poller interface {
 	Statuses() []opencode.AgentStatus
 }
 
+// WeightsSource supplies the current Bifrost routing weights, keyed by the
+// environment variable that holds each subscription key. Implementations must
+// return (nil, error) when no weight could be fetched; the dashboard then
+// renders the weight as unknown rather than failing.
+type WeightsSource interface {
+	WeightsByEnv() (map[string]float64, error)
+}
+
 // Handler serves the dashboard and API.
 type Handler struct {
-	tmpl   *template.Template
-	poller Poller
+	tmpl    *template.Template
+	poller  Poller
+	weights WeightsSource
 
 	// now is injectable so the rendered budget can be asserted deterministically.
 	now func() time.Time
 }
 
-// New creates a Handler with embedded templates.
-func New(poller Poller) *Handler {
+// New creates a Handler with embedded templates. weights may be nil: the
+// dashboard degrades to "poids inconnu" when no Bifrost source is wired.
+func New(poller Poller, weights WeightsSource) *Handler {
 	funcMap := template.FuncMap{
 		"levelLabel": levelLabel,
 		"fmtTime":    fmtTime,
@@ -64,13 +74,15 @@ func New(poller Poller) *Handler {
 		"fmtRate":    fmtRate,
 		"deltaPts":   deltaPts,
 		"clamp":      clamp,
+		"weightText": weightText,
+		"weightZero": weightZero,
 	}
 
 	tmpl := template.Must(
 		template.New("").Funcs(funcMap).ParseFS(templatesFS, "templates/*.html"),
 	)
 
-	return &Handler{tmpl: tmpl, poller: poller, now: time.Now}
+	return &Handler{tmpl: tmpl, poller: poller, weights: weights, now: time.Now}
 }
 
 // WindowView is a quota window plus its budget position. JSON field names match
@@ -94,6 +106,10 @@ type AgentView struct {
 	Error     string         `json:"error,omitempty"`
 	FetchedAt time.Time      `json:"fetchedAt"`
 	Level     opencode.Level `json:"level"`
+
+	// Weight is the current Bifrost load-balancing weight of this
+	// subscription's key; nil when Bifrost could not be read.
+	Weight *float64 `json:"weight,omitempty"`
 
 	// Monthly is the window the dashboard leads with; nil on error.
 	Monthly *WindowView `json:"-"`
@@ -126,7 +142,7 @@ type DashboardData struct {
 	KeyCount int
 }
 
-func buildDashboardData(statuses []opencode.AgentStatus, now time.Time) DashboardData {
+func buildDashboardData(statuses []opencode.AgentStatus, weights map[string]float64, now time.Time) DashboardData {
 	agents := make([]AgentView, 0, len(statuses))
 
 	for _, s := range statuses {
@@ -135,6 +151,9 @@ func buildDashboardData(statuses []opencode.AgentStatus, now time.Time) Dashboar
 			Error:     s.Error,
 			FetchedAt: s.FetchedAt,
 			Level:     opencode.LevelGreen,
+		}
+		if w, ok := weights[s.EnvVar]; ok {
+			av.Weight = &w
 		}
 
 		for _, w := range s.Windows {
@@ -237,6 +256,20 @@ func moreCritical(a, b *AgentView) bool {
 	return a.Monthly.Percent > b.Monthly.Percent
 }
 
+// weightsNow reads the current Bifrost routing weights, tolerating a nil
+// source (weights stay unknown) and any fetch error (the dashboard must never
+// depend on Bifrost being up).
+func (h *Handler) weightsNow() map[string]float64 {
+	if h.weights == nil {
+		return nil
+	}
+	w, err := h.weights.WeightsByEnv()
+	if err != nil {
+		return nil
+	}
+	return w
+}
+
 // Dashboard renders the HTML page.
 func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
@@ -244,7 +277,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := buildDashboardData(h.poller.Statuses(), h.now())
+	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.now())
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.tmpl.ExecuteTemplate(w, "dashboard.html", data); err != nil {
@@ -254,7 +287,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 
 // APIUsage returns JSON usage data, enriched with the budget position.
 func (h *Handler) APIUsage(w http.ResponseWriter, r *http.Request) {
-	data := buildDashboardData(h.poller.Statuses(), h.now())
+	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.now())
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -377,4 +410,22 @@ func deltaPts(v int) string {
 	default:
 		return "pile sur le budget"
 	}
+}
+
+// weightText renders the current Bifrost routing weight of a subscription.
+// nil means Bifrost could not be read; 0 means the key is out of rotation.
+// Decimal comma, consistent with the other French figures on the page.
+func weightText(w *float64) string {
+	if w == nil {
+		return "poids inconnu"
+	}
+	if *w == 0 {
+		return "hors rotation"
+	}
+	return "poids " + decimal(*w, 1)
+}
+
+// weightZero reports whether a known weight is exactly 0 (key out of rotation).
+func weightZero(w *float64) bool {
+	return w != nil && *w == 0
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/rjullien/opencode-usage-tracker/internal/bifrost"
 	"github.com/rjullien/opencode-usage-tracker/internal/handler"
 	"github.com/rjullien/opencode-usage-tracker/internal/opencode"
 )
@@ -35,7 +36,17 @@ func main() {
 	client := opencode.NewClient(15 * time.Second)
 	fetcher := opencode.NewFetcher(client, keys, cacheTTL)
 
-	h := handler.New(fetcher)
+	// Bifrost is an auxiliary, read-only source: the current routing weights
+	// per key. A slow or dead gateway must not block the dashboard, so the
+	// timeout stays short and failures render as "poids inconnu".
+	bifrostURL := os.Getenv("BIFROST_URL")
+	if bifrostURL == "" {
+		bifrostURL = "http://bifrost.openclaw.svc.cluster.local:8080"
+	}
+	weights := bifrost.NewClient(bifrostURL, 2*time.Second)
+	log.Printf("Bifrost weights source: %s", bifrostURL)
+
+	h := handler.New(fetcher, weights)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.Dashboard)
