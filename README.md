@@ -131,6 +131,7 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 | `OPENCODE_GO_API_KEY` | — | Clé Go, affichée « Main » (au moins une clé requise) |
 | `OPENCODE_GO_API_KEY_<SUFFIXE>` | — | Clé supplémentaire, affichée « SUFFIXE » |
 | `DEVIN_API_KEY` | — | Token Devin (optionnel) — active la **section ACU Devin**, totalement séparée du lot OpenCode |
+| `DEVIN_RESET_DAY` | `5` | Jour du mois du reset de budget Devin (plan Pro individuel, non exposé par l'API) |
 
 Toute variable commençant par `OPENCODE_GO_API_KEY` est découverte automatiquement, et le label
 d'affichage est déduit du suffixe : `OPENCODE_GO_API_KEY_R` s'affiche « R »,
@@ -151,7 +152,9 @@ Les 4 clés OpenCode partagées ne sont jamais mélangées à Devin.
 
 ⚠️ L'API publique n'expose **pas** la limite ACU du plan (`acu_limit`,
 `daily_quota_remaining_percent`) : elle ne vit que dans le gRPC interne du CLI.
-Le board affiche la **consommation réelle**, pas un pourcentage.
+Le board affiche la **consommation réelle**, pas un pourcentage. La date de
+**reset budget** est fixée au **5 du mois** (`DEVIN_RESET_DAY`, défaut 5) —
+valeur du plan Pro individuel, l'API REST ne la renvoie pas.
 
 ## Développement local
 

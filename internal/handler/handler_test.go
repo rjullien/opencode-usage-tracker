@@ -444,13 +444,13 @@ func devinStatusOK() *devin.Status {
 		OrgID:       "org-93932dfb42b443c78ba280183a3d697d",
 		Days: []devin.DayUsage{
 			{
-				Date: mustTime("2026-08-31T00:00:00Z"),
-				ACUs: 12.5,
+				Date:          mustTime("2026-08-31T00:00:00Z"),
+				ACUs:          12.5,
 				ACUsByProduct: devin.ACUsByProduct{Devin: 12.5, Cascade: 0, Terminal: 0},
 			},
 			{
-				Date: mustTime("2026-08-30T00:00:00Z"),
-				ACUs: 30,
+				Date:          mustTime("2026-08-30T00:00:00Z"),
+				ACUs:          30,
 				ACUsByProduct: devin.ACUsByProduct{Devin: 20, Cascade: 5, Terminal: 5},
 			},
 		},
@@ -470,6 +470,7 @@ func TestDashboardWithDevinSection(t *testing.T) {
 		"dernier relevé",
 		"répartition : devin 12,5",
 		"org-93932dfb42b443c78ba280183a3d697d",
+		"reset budget",
 	)
 }
 
@@ -515,5 +516,23 @@ func TestAPIDevinNotFoundWithoutSource(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404 sans source Devin", rec.Code)
+	}
+}
+
+func TestNextResetDay(t *testing.T) {
+	// Le 3 du mois → reset le 5 du même mois.
+	early := mustTime("2026-09-03T10:00:00Z")
+	if got := nextResetDay(early); got.Day() != 5 || got.Month() != time.September {
+		t.Errorf("nextResetDay(03/09) = %v, want 05/09", got)
+	}
+	// Le 7 du mois → reset le 5 du mois suivant.
+	late := mustTime("2026-09-07T10:00:00Z")
+	if got := nextResetDay(late); got.Day() != 5 || got.Month() != time.October {
+		t.Errorf("nextResetDay(07/09) = %v, want 05/10", got)
+	}
+	// Le 5 exactement : déjà passé 00:00 → mois suivant.
+	onDay := mustTime("2026-09-05T00:00:00Z")
+	if got := nextResetDay(onDay); got.Month() != time.October {
+		t.Errorf("nextResetDay(05/09 00:00) = %v, want 05/10", got)
 	}
 }

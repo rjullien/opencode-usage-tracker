@@ -162,15 +162,31 @@ type DashboardData struct {
 //
 // Pas de pourcentage ni de feu : l'API publique Devin n'expose pas la limite
 // ACU (le gRPC interne du CLI seulement). On affiche la consommation réelle.
+// ResetAt est le prochain reset de budget : fixé au N du mois (le plan Devin
+// ne l'expose pas via l'API REST) — voir devin.ResetDayFromEnv.
 type DevinView struct {
 	Status devin.Status
+	// ResetAt : prochain jour de reset (5 du mois par défaut).
+	ResetAt time.Time
 }
 
-func buildDevinView(s *devin.Status) *DevinView {
+func buildDevinView(s *devin.Status, now time.Time) *DevinView {
 	if s == nil {
 		return nil
 	}
-	return &DevinView{Status: *s}
+	return &DevinView{Status: *s, ResetAt: nextResetDay(now)}
+}
+
+// nextResetDay calcule la prochaine occurrence du jour N du mois (défaut 5).
+// Si on est déjà passé le jour N ce mois-ci, on prend le mois suivant.
+func nextResetDay(now time.Time) time.Time {
+	day := devin.ResetDayFromEnv()
+	year, month, _ := now.Date()
+	candidate := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+	if !candidate.After(now) {
+		candidate = time.Date(year, month+1, day, 0, 0, 0, 0, time.UTC)
+	}
+	return candidate
 }
 
 func buildDashboardData(statuses []opencode.AgentStatus, weights map[string]float64, devSrc DevinSource, now time.Time) DashboardData {
@@ -223,7 +239,7 @@ func buildDashboardData(statuses []opencode.AgentStatus, weights map[string]floa
 	return DashboardData{
 		Agents:   agents,
 		Pool:     buildPool(agents),
-		Devin:    buildDevinView(statusesDev(devSrc)),
+		Devin:    buildDevinView(statusesDev(devSrc), now),
 		Now:      now,
 		KeyCount: len(agents),
 	}

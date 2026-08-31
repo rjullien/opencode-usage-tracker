@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -47,23 +48,23 @@ type SelfResponse struct {
 // ConsumptionResponse est la réponse de
 // GET /v3/organizations/{org}/consumption/daily.
 type ConsumptionResponse struct {
-	TotalACUs          float64            `json:"total_acus"`
+	TotalACUs         float64             `json:"total_acus"`
 	ConsumptionByDate []ConsumptionByDate `json:"consumption_by_date"`
 }
 
 // ConsumptionByDate est un jour de consommation.
 type ConsumptionByDate struct {
-	Date         int64         `json:"date"`
-	ACUs         float64       `json:"acus"`
+	Date          int64         `json:"date"`
+	ACUs          float64       `json:"acus"`
 	ACUsByProduct ACUsByProduct `json:"acus_by_product"`
 }
 
 // ACUsByProduct détaille la consommation par produit Devin.
 type ACUsByProduct struct {
-	Devin     float64  `json:"devin"`
-	Cascade   float64  `json:"cascade"`
-	Terminal  float64  `json:"terminal"`
-	Review    *float64 `json:"review"`
+	Devin    float64  `json:"devin"`
+	Cascade  float64  `json:"cascade"`
+	Terminal float64  `json:"terminal"`
+	Review   *float64 `json:"review"`
 }
 
 // Status porte les données ACU Devin affichées par le dashboard.
@@ -90,8 +91,8 @@ type Status struct {
 
 // DayUsage est un jour de consommation ACU.
 type DayUsage struct {
-	Date         time.Time    `json:"date"`
-	ACUs         float64      `json:"acus"`
+	Date          time.Time     `json:"date"`
+	ACUs          float64       `json:"acus"`
 	ACUsByProduct ACUsByProduct `json:"acusByProduct"`
 }
 
@@ -200,6 +201,20 @@ func parseResponse(body []byte, orgID string) (Status, error) {
 // TokenFromEnv lit DEVIN_API_KEY (optionnel : dashboard sans Devin si absent).
 func TokenFromEnv() string {
 	return os.Getenv("DEVIN_API_KEY")
+}
+
+// ResetDayFromEnv lit DEVIN_RESET_DAY : jour du mois du reset de budget Devin.
+// Défaut 5 (le plan Pro individuel reset le 5 du mois — valeur constatée dans
+// la UI, non exposée par l'API REST). Clampé à [1,28] pour éviter les mois
+// sans ce jour.
+func ResetDayFromEnv() int {
+	day := 5
+	if v := os.Getenv("DEVIN_RESET_DAY"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 && n <= 28 {
+			day = n
+		}
+	}
+	return day
 }
 
 func truncate(s string, max int) string {
