@@ -439,30 +439,37 @@ func (st stubDevin) Statuses() *devin.Status { return st.s }
 
 func devinStatusOK() *devin.Status {
 	return &devin.Status{
-		ACUConsumed:       42.5,
-		ACULimit:          500,
-		Percent:           9,
-		DailyRemainingPct: 61,
-		WeeklyRemainingPct: 34,
-		DailyResetAt:      mustTime("2026-09-01T00:00:00Z"),
-		WeeklyResetAt:     mustTime("2026-09-07T00:00:00Z"),
-		FetchedAt:         captureNow,
+		ACUConsumed: 42.5,
+		DayCount:    2,
+		OrgID:       "org-93932dfb42b443c78ba280183a3d697d",
+		Days: []devin.DayUsage{
+			{
+				Date: mustTime("2026-08-31T00:00:00Z"),
+				ACUs: 12.5,
+				ACUsByProduct: devin.ACUsByProduct{Devin: 12.5, Cascade: 0, Terminal: 0},
+			},
+			{
+				Date: mustTime("2026-08-30T00:00:00Z"),
+				ACUs: 30,
+				ACUsByProduct: devin.ACUsByProduct{Devin: 20, Cascade: 5, Terminal: 5},
+			},
+		},
+		FetchedAt: captureNow,
 	}
 }
 
 func TestDashboardWithDevinSection(t *testing.T) {
-	h := New(emptyPoller{}, nil, stubDevin{s: devinStatusOK()})
+	h := New(stubPoller{}, nil, stubDevin{s: devinStatusOK()})
 	body := renderDashboard(t, h)
 
 	mustContain(t, body,
 		"Devin — ACU",
 		"hors lot OpenCode",
-		"42,5 / 500 ACU",
-		"quota journalier restant",
-		"61%",
-		"quota hebdo restant",
-		"34%",
-		"reset hebdo",
+		"42,5 ACU",
+		"2 jour(s)",
+		"dernier relevé",
+		"répartition : devin 12,5",
+		"org-93932dfb42b443c78ba280183a3d697d",
 	)
 }
 
@@ -496,8 +503,8 @@ func TestAPIDevin(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.Percent != 9 || got.ACULimit != 500 {
-		t.Errorf("got %+v, want percent 9 / limit 500", got)
+	if got.ACUConsumed != 42.5 || got.OrgID != "org-93932dfb42b443c78ba280183a3d697d" {
+		t.Errorf("got %+v, want consumption 42.5 / org-93932dfb42b443c78ba280183a3d697d", got)
 	}
 }
 

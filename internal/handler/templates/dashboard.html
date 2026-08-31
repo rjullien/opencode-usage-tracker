@@ -332,7 +332,7 @@
           {{if $d.Status.Error}}
             <span class="badge red"><span class="dot-sm red"></span>injoignable</span>
           {{else}}
-            <span class="badge {{$d.Level}}"><span class="dot-sm {{$d.Level}}"></span>{{levelLabel $d.Level}}</span>
+            <span class="badge green"><span class="dot-sm green"></span>consommation</span>
           {{end}}
         </div>
 
@@ -342,38 +342,26 @@
           <div class="window lead">
             <div class="window-header">
               <span class="window-label">ACU consommés</span>
-              <span class="window-pct {{$d.Level}}">
-                {{if ge $d.Percent 0}}{{$d.Percent}}%{{else}}n/a{{end}}
-              </span>
-            </div>
-            <div class="bar-track">
-              {{if ge $d.Percent 0}}
-                <div class="bar-fill {{$d.Level}}" style="width: {{clamp $d.Percent}}%"></div>
-              {{end}}
+              <span class="window-pct green">{{fmtACU $d.Status.ACUConsumed}} ACU</span>
             </div>
             <div class="lines">
               <div class="line">
-                <span class="num">{{fmtACU $d.Status.ACUConsumed}} / {{fmtACU $d.Status.ACULimit}} ACU</span>
-                <span class="num">période en cours</span>
+                <span class="num">période couverte : {{$d.Status.DayCount}} jour(s)</span>
+                <span class="num">{{fmtACU $d.Status.ACUConsumed}} au total</span>
               </div>
-              {{if ge $d.Status.DailyRemainingPct 0}}
+              {{with $d.Status.Days}}
+                {{$last := index (lastDays .) 0}}
                 <div class="line">
-                  <span class="num">quota journalier restant</span>
-                  <span class="num">{{$d.Status.DailyRemainingPct}}%</span>
+                  <span class="num">dernier relevé : {{fmtDay $last.Date}}</span>
+                  <span class="num">{{fmtACU $last.ACUs}} ACU</span>
                 </div>
-              {{end}}
-              {{if ge $d.Status.WeeklyRemainingPct 0}}
-                <div class="line">
-                  <span class="num">quota hebdo restant</span>
-                  <span class="num">{{$d.Status.WeeklyRemainingPct}}%</span>
-                </div>
-              {{end}}
-              {{if not $d.Status.WeeklyResetAt.IsZero}}
                 <div class="line muted">
-                  <span class="num">reset hebdo</span>
-                  <span class="num">{{fmtDate $d.Status.WeeklyResetAt}}</span>
+                  <span class="num">répartition : devin {{fmtACU (productACU $last.ACUsByProduct "devin")}} · cascade {{fmtACU (productACU $last.ACUsByProduct "cascade")}} · terminal {{fmtACU (productACU $last.ACUsByProduct "terminal")}}</span>
                 </div>
               {{end}}
+              <div class="line muted">
+                <span class="num">org {{$d.Status.OrgID}}</span>
+              </div>
             </div>
           </div>
         {{end}}

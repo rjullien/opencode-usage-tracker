@@ -88,6 +88,8 @@ func New(poller Poller, weights WeightsSource, devin DevinSource) *Handler {
 		"weightText": weightText,
 		"weightZero": weightZero,
 		"fmtACU":     fmtACU,
+		"lastDays":   lastDays,
+		"productACU": productACU,
 	}
 
 	tmpl := template.Must(
@@ -157,28 +159,18 @@ type DashboardData struct {
 
 // DevinView est la section ACU Devin, totalement séparée des abonnements
 // OpenCode partagés. nil quand aucun token n'est configuré (section absente).
+//
+// Pas de pourcentage ni de feu : l'API publique Devin n'expose pas la limite
+// ACU (le gRPC interne du CLI seulement). On affiche la consommation réelle.
 type DevinView struct {
-	Status  devin.Status
-	Level   opencode.Level
-	Percent int
+	Status devin.Status
 }
 
 func buildDevinView(s *devin.Status) *DevinView {
 	if s == nil {
 		return nil
 	}
-	view := &DevinView{Status: *s, Level: opencode.LevelGreen}
-
-	if s.Percent >= 0 {
-		view.Percent = clamp(s.Percent)
-		switch {
-		case s.Percent >= 90:
-			view.Level = opencode.LevelRed
-		case s.Percent >= 70:
-			view.Level = opencode.LevelAmber
-		}
-	}
-	return view
+	return &DevinView{Status: *s}
 }
 
 func buildDashboardData(statuses []opencode.AgentStatus, weights map[string]float64, devSrc DevinSource, now time.Time) DashboardData {
@@ -503,4 +495,31 @@ func fmtACU(v float64) string {
 		return strconv.FormatInt(int64(v), 10)
 	}
 	return strings.Replace(strconv.FormatFloat(v, 'f', 1, 64), ".", ",", 1)
+}
+
+// lastDays renvoie les jours de consommation ACU triés du plus récent au plus
+// ancien (le premier élément est le dernier relevé). L'API ne garantit pas
+// l'ordre ; on trie explicitement par date décroissante.
+func lastDays(days []devin.DayUsage) []devin.DayUsage {
+	out := make([]devin.DayUsage, len(days))
+	copy(out, days)
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j].Date.After(out[j-1].Date); j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out
+}
+
+// productACU extrait la consommation d'un produit donné (devin/cascade/terminal).
+func productACU(p devin.ACUsByProduct, name string) float64 {
+	switch name {
+	case "devin":
+		return p.Devin
+	case "cascade":
+		return p.Cascade
+	case "terminal":
+		return p.Terminal
+	}
+	return 0
 }

@@ -140,13 +140,18 @@ aucune modification de code. L'ordre d'affichage suit le nom de la variable, pou
 ### Section Devin ACU (à part du lot OpenCode)
 
 Sans `DEVIN_API_KEY`, rien ne change : la section Devin est absente du dashboard et
-`/api/devin` répond 404. Avec le token, une carte « Devin — ACU » apparaît **en dessous**
-de la grille OpenCode : ACU consommés/limite, % du quota journalier et hebdo restants,
-date du reset hebdo. Les 4 clés OpenCode partagées ne sont jamais mélangées à Devin.
+`/api/devin` répond 404. Avec un token `cog_` (PAT ou service user), une carte
+« Devin — ACU » apparaît **en dessous** de la grille OpenCode : total ACU consommés,
+jours de consommation, répartition par produit (devin/cascade/terminal), org.
+Les 4 clés OpenCode partagées ne sont jamais mélangées à Devin.
 
-⚠️ **API Devin : endpoint `/v3/self` non public — format d'assumption** (voir la PR) :
-`user_status.plan_info.{acu_consumed, acu_limit, daily_quota_remaining_percent,
-weekly_quota_remaining_percent, ...}`. À valider avec un vrai token avant merge.
+**API utilisée (validée 31/08/2026 avec un PAT `cog_`) :**
+- `GET /v3/self` → identité + `org_id`
+- `GET /v3/organizations/{org_id}/consumption/daily` → `{total_acus, consumption_by_date[{date, acus, acus_by_product}]}`
+
+⚠️ L'API publique n'expose **pas** la limite ACU du plan (`acu_limit`,
+`daily_quota_remaining_percent`) : elle ne vit que dans le gRPC interne du CLI.
+Le board affiche la **consommation réelle**, pas un pourcentage.
 
 ## Développement local
 

@@ -4,73 +4,95 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"os"
 	"time"
 )
 
-// Devin CLI/API base URL — endpoint quota ACU : GET /v3/self (Bearer auth).
-// NOTE: endpoint non documenté publiquement (l'API Enterprise v2 n'expose que
-// des métriques sessions/searches/PRs, PAS le quota ACU). Le chemin /v3/self
-// est celui que le CLI Devin utilise (observé dans le binaire 3000.6.7).
+// API Devin — endpoints documentés (v3, token PAT ou service user `cog_`) :
+//
+//	GET /v3/self                             → identité + org_id (200)
+//	GET /v3/organizations/{org}/consumption/daily → consommation ACU (200)
+//
+// Schéma réel vérifié le 31/08/2026 avec un PAT `cog_` :
+//
+//	GET /v3/self →
+//	  {"principal_type":"pat_user","user_id":"user-...","org_id":"org-..."}
+//
+//	GET /v3/organizations/{org}/consumption/daily →
+//	  {"total_acus":0.0,"consumption_by_date":[
+//	    {"date":1788393600,"acus":12.5,
+//	     "acus_by_product":{"devin":12.5,"cascade":0,"terminal":0,"review":null}}
+//	  ]}
+//
+// ⚠️ La LIMITE ACU (`acu_limit`, `daily_quota_remaining_percent`...) n'est PAS
+// exposée par l'API REST publique : elle ne vit que dans le gRPC interne du CLI
+// (GetUserStatus). Le board affiche donc la CONSOMMATION ACU réelle.
+
 const apiBaseURL = "https://api.devin.ai"
 
-// selfPath est le chemin du user status. ASSUMPTION : à vérifier avec un vrai
-// token (voir PR). Le CLI l'appelle avec le token du credentials.toml.
-const selfPath = "/v3/self"
+const (
+	selfPath        = "/v3/self"
+	consumptionPath = "/v3/organizations/%s/consumption/daily"
+)
 
-// PlanInfo est l'ASSUMPTION du payload plan_info renvoyé par /v3/self.
-//
-// Champs observés dans le binaire devin (strings) — à confirmer avec un vrai
-// token avant merge :
-//
-//	acu_consumed                 — ACU consommés sur la période
-//	acu_limit                    — limite d'ACU de la période
-//	daily_quota_remaining_percent  — % de quota JOURNALIER restant
-//	weekly_quota_remaining_percent — % de quota HEBDO restant
-//	top_up_status                — état du top-up automatique
-//	grace_period_status          — période de grâce éventuelle
-//	plan_start                   — début de la période (ISO 8601)
-type PlanInfo struct {
-	ACUConsumed             *float64 `json:"acu_consumed"`
-	ACULimit                *float64 `json:"acu_limit"`
-	DailyQuotaRemainingPct  *float64 `json:"daily_quota_remaining_percent"`
-	WeeklyQuotaRemainingPct *float64 `json:"weekly_quota_remaining_percent"`
-	ToUpStatus              *string  `json:"top_up_status"`
-	GracePeriodStatus       *string  `json:"grace_period_status"`
-	PlanStart               *string  `json:"plan_start"`
-	DailyQuotaResetAtUnix   *int64   `json:"daily_quota_reset_at_unix"`
-	WeeklyQuotaResetAtUnix  *int64   `json:"weekly_quota_reset_at_unix"`
+// SelfResponse est la réponse de GET /v3/self.
+type SelfResponse struct {
+	PrincipalType string `json:"principal_type"`
+	UserID        string `json:"user_id"`
+	UserName      string `json:"user_name"`
+	OrgID         string `json:"org_id"`
 }
 
-// apiResponse est l'ASSUMPTION de la réponse complète de GET /v3/self.
-type apiResponse struct {
-	UserStatus struct {
-		PlanInfo PlanInfo `json:"plan_info"`
-	} `json:"user_status"`
+// ConsumptionResponse est la réponse de
+// GET /v3/organizations/{org}/consumption/daily.
+type ConsumptionResponse struct {
+	TotalACUs          float64            `json:"total_acus"`
+	ConsumptionByDate []ConsumptionByDate `json:"consumption_by_date"`
+}
+
+// ConsumptionByDate est un jour de consommation.
+type ConsumptionByDate struct {
+	Date         int64         `json:"date"`
+	ACUs         float64       `json:"acus"`
+	ACUsByProduct ACUsByProduct `json:"acus_by_product"`
+}
+
+// ACUsByProduct détaille la consommation par produit Devin.
+type ACUsByProduct struct {
+	Devin     float64  `json:"devin"`
+	Cascade   float64  `json:"cascade"`
+	Terminal  float64  `json:"terminal"`
+	Review    *float64 `json:"review"`
 }
 
 // Status porte les données ACU Devin affichées par le dashboard.
+//
+// Le dashboard montre la CONSOMMATION réelle (total_acus de la période) et sa
+// répartition par produit. Pas de pourcentage : la limite ACU du plan n'est
+// pas exposée par l'API publique.
 type Status struct {
-	// ACUConsumed/ACULimit : période en cours (mensuelle ou plan).
+	// ACUConsumed : total ACU consommés sur la période couverte par l'API.
 	ACUConsumed float64 `json:"acuConsumed"`
-	ACULimit    float64 `json:"acuLimit"`
 
-	// Percent est la consommation ACU en % de la limite. -1 si non calculable.
-	Percent int `json:"percent"`
+	// Days : consommation par jour (date epoch, acus, acusByProduct).
+	Days []DayUsage `json:"days,omitempty"`
 
-	// DailyRemainingPct / WeeklyRemainingPct : % de quota RESTANT (100 = neuf).
-	// -1 si l'API ne les renvoie pas.
-	DailyRemainingPct  int `json:"dailyRemainingPct"`
-	WeeklyRemainingPct int `json:"weeklyRemainingPct"`
+	// DayCount : nombre de jours de consommation renvoyés.
+	DayCount int `json:"dayCount"`
 
-	// Resets : instants de reset des quotas journalier/hebdo.
-	DailyResetAt  time.Time `json:"dailyResetAt,omitempty"`
-	WeeklyResetAt time.Time `json:"weeklyResetAt,omitempty"`
+	// OrgID : organisation du compte (via /v3/self).
+	OrgID string `json:"orgId,omitempty"`
 
 	FetchedAt time.Time `json:"fetchedAt"`
 	Error     string    `json:"error,omitempty"`
+}
+
+// DayUsage est un jour de consommation ACU.
+type DayUsage struct {
+	Date         time.Time    `json:"date"`
+	ACUs         float64      `json:"acus"`
+	ACUsByProduct ACUsByProduct `json:"acusByProduct"`
 }
 
 // Client appelle l'API Devin.
@@ -98,11 +120,32 @@ func NewClientWithURL(timeout time.Duration, token, baseURL string) *Client {
 	}
 }
 
-// FetchStatus récupère le statut (quota ACU) du compte Devin.
+// FetchStatus récupère la consommation ACU Devin : d'abord /v3/self pour
+// l'org_id, puis l'endpoint consumption/daily de l'organisation.
 func (c *Client) FetchStatus() (Status, error) {
-	req, err := http.NewRequest("GET", c.baseURL+selfPath, nil)
+	self, err := c.getJSON(selfPath)
 	if err != nil {
 		return Status{}, err
+	}
+	var sr SelfResponse
+	if err := json.Unmarshal(self, &sr); err != nil {
+		return Status{}, fmt.Errorf("JSON parse error (/v3/self): %w", err)
+	}
+	if sr.OrgID == "" {
+		return Status{}, fmt.Errorf("aucun org_id dans /v3/self")
+	}
+
+	body, err := c.getJSON(fmt.Sprintf(consumptionPath, sr.OrgID))
+	if err != nil {
+		return Status{}, err
+	}
+	return parseResponse(body, sr.OrgID)
+}
+
+func (c *Client) getJSON(path string) ([]byte, error) {
+	req, err := http.NewRequest("GET", c.baseURL+path, nil)
+	if err != nil {
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
@@ -110,70 +153,46 @@ func (c *Client) FetchStatus() (Status, error) {
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return Status{}, fmt.Errorf("network error: %w", err)
+		return nil, fmt.Errorf("network error: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return Status{}, fmt.Errorf("read error: %w", err)
+		return nil, fmt.Errorf("read error: %w", err)
 	}
 
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return Status{}, fmt.Errorf("token Devin invalide ou expiré (HTTP %d)", resp.StatusCode)
+		return nil, fmt.Errorf("token Devin invalide ou expiré (HTTP %d)", resp.StatusCode)
 	}
 	if resp.StatusCode != 200 {
-		return Status{}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(body), 200))
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(body), 200))
 	}
-
-	return parseResponse(body)
+	return body, nil
 }
 
-// parseResponse convertit la réponse API en Status.
-//
-// ASSUMPTION API : basée sur les champs observés dans le binaire devin
-// (strings). À valider avec un vrai token — voir la PR (draft, non mergeable).
-func parseResponse(body []byte) (Status, error) {
-	var resp apiResponse
+// parseResponse convertit la réponse consumption/daily en Status.
+func parseResponse(body []byte, orgID string) (Status, error) {
+	var resp ConsumptionResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return Status{}, fmt.Errorf("JSON parse error: %w", err)
 	}
 
-	p := resp.UserStatus.PlanInfo
 	s := Status{
-		FetchedAt:          time.Now(),
-		DailyRemainingPct:  -1,
-		WeeklyRemainingPct: -1,
+		ACUConsumed: resp.TotalACUs,
+		OrgID:       orgID,
+		FetchedAt:   time.Now(),
 	}
 
-	if p.ACUConsumed != nil {
-		s.ACUConsumed = *p.ACUConsumed
+	for _, d := range resp.ConsumptionByDate {
+		day := DayUsage{
+			Date:          time.Unix(d.Date, 0),
+			ACUs:          d.ACUs,
+			ACUsByProduct: d.ACUsByProduct,
+		}
+		s.Days = append(s.Days, day)
 	}
-	if p.ACULimit != nil {
-		s.ACULimit = *p.ACULimit
-	}
-	if p.DailyQuotaRemainingPct != nil {
-		s.DailyRemainingPct = int(*p.DailyQuotaRemainingPct)
-	}
-	if p.WeeklyQuotaRemainingPct != nil {
-		s.WeeklyRemainingPct = int(*p.WeeklyQuotaRemainingPct)
-	}
-	if p.DailyQuotaResetAtUnix != nil {
-		s.DailyResetAt = time.Unix(*p.DailyQuotaResetAtUnix, 0)
-	}
-	if p.WeeklyQuotaResetAtUnix != nil {
-		s.WeeklyResetAt = time.Unix(*p.WeeklyQuotaResetAtUnix, 0)
-	}
-
-	if s.ACULimit > 0 {
-		s.Percent = int(math.Round(s.ACUConsumed / s.ACULimit * 100))
-	} else {
-		s.Percent = -1
-	}
-
-	if s.ACUConsumed == 0 && s.ACULimit == 0 && s.DailyRemainingPct < 0 && s.WeeklyRemainingPct < 0 {
-		return Status{}, fmt.Errorf("aucune donnée ACU dans la réponse: %s", truncate(string(body), 300))
-	}
+	s.DayCount = len(s.Days)
 
 	return s, nil
 }
