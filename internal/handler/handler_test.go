@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/rjullien/opencode-usage-tracker/internal/devin"
 	"github.com/rjullien/opencode-usage-tracker/internal/opencode"
 )
 
@@ -73,7 +74,7 @@ func newTestHandler(t *testing.T) *Handler {
 		"OPENCODE_GO_API_KEY_A": 0,
 		"OPENCODE_GO_API_KEY_N": 1,
 		"OPENCODE_GO_API_KEY_R": 1,
-	})
+	}, nil) // pas de source Devin dans les tests OpenCode existants
 	h.now = func() time.Time { return captureNow }
 	return h
 }
@@ -420,5 +421,92 @@ func TestDisplayTimesUseParisLocalTime(t *testing.T) {
 	winter := mustTime("2026-01-15T23:30:00Z")
 	if got := fmtTime(winter); got != "00:30" {
 		t.Errorf("fmtTime(winter) = %q, want 00:30 (Europe/Paris, winter time)", got)
+	}
+}
+
+// ---- Devin ACU : la section est séparée du lot OpenCode et optionnelle ----
+
+// stubPoller renvoie zéro abonnement OpenCode : utile pour tester la section
+// Devin seule, sans dépendre du fetch OpenCode.
+type emptyPoller struct{}
+
+func (emptyPoller) Statuses() []opencode.AgentStatus { return nil }
+
+// stubDevin est une source Devin de test.
+type stubDevin struct{ s *devin.Status }
+
+func (st stubDevin) Statuses() *devin.Status { return st.s }
+
+func devinStatusOK() *devin.Status {
+	return &devin.Status{
+		ACUConsumed:       42.5,
+		ACULimit:          500,
+		Percent:           9,
+		DailyRemainingPct: 61,
+		WeeklyRemainingPct: 34,
+		DailyResetAt:      mustTime("2026-09-01T00:00:00Z"),
+		WeeklyResetAt:     mustTime("2026-09-07T00:00:00Z"),
+		FetchedAt:         captureNow,
+	}
+}
+
+func TestDashboardWithDevinSection(t *testing.T) {
+	h := New(emptyPoller{}, nil, stubDevin{s: devinStatusOK()})
+	body := renderDashboard(t, h)
+
+	mustContain(t, body,
+		"Devin — ACU",
+		"hors lot OpenCode",
+		"42,5 / 500 ACU",
+		"quota journalier restant",
+		"61%",
+		"quota hebdo restant",
+		"34%",
+		"reset hebdo",
+	)
+}
+
+func TestDashboardDevinAbsentWithoutSource(t *testing.T) {
+	h := newTestHandler(t) // nil → aucune source Devin
+	body := renderDashboard(t, h)
+
+	if strings.Contains(body, "Devin") {
+		t.Error("section Devin présente alors qu'aucune source n'est câblée")
+	}
+}
+
+func TestDashboardDevinErrorRendered(t *testing.T) {
+	h := New(emptyPoller{}, nil, stubDevin{
+		s: &devin.Status{Error: "token Devin invalide ou expiré (HTTP 401)", FetchedAt: captureNow},
+	})
+	body := renderDashboard(t, h)
+
+	mustContain(t, body, "injoignable", "token Devin invalide ou expiré")
+}
+
+func TestAPIDevin(t *testing.T) {
+	h := New(emptyPoller{}, nil, stubDevin{s: devinStatusOK()})
+	rec := httptest.NewRecorder()
+	h.APIDevin(rec, httptest.NewRequest(http.MethodGet, "/api/devin", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var got devin.Status
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.Percent != 9 || got.ACULimit != 500 {
+		t.Errorf("got %+v, want percent 9 / limit 500", got)
+	}
+}
+
+func TestAPIDevinNotFoundWithoutSource(t *testing.T) {
+	h := newTestHandler(t)
+	rec := httptest.NewRecorder()
+	h.APIDevin(rec, httptest.NewRequest(http.MethodGet, "/api/devin", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 sans source Devin", rec.Code)
 	}
 }

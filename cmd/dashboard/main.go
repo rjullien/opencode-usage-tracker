@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rjullien/opencode-usage-tracker/internal/bifrost"
+	"github.com/rjullien/opencode-usage-tracker/internal/devin"
 	"github.com/rjullien/opencode-usage-tracker/internal/handler"
 	"github.com/rjullien/opencode-usage-tracker/internal/opencode"
 )
@@ -46,11 +47,24 @@ func main() {
 	weights := bifrost.NewClient(bifrostURL, 2*time.Second)
 	log.Printf("Bifrost weights source: %s", bifrostURL)
 
-	h := handler.New(fetcher, weights)
+	// Devin ACU : OPTIONNEL et totalement à part des 4 clés OpenCode partagées.
+	// Sans DEVIN_API_KEY, la section Devin est absente du dashboard et de l'API.
+	var devSrc handler.DevinSource
+	if devToken := devin.TokenFromEnv(); devToken != "" {
+		devClient := devin.NewClient(15*time.Second, devToken)
+		devFetcher := devin.NewFetcher(devClient, devToken, cacheTTL)
+		devSrc = devFetcher
+		log.Printf("Devin ACU source: configurée (DEVIN_API_KEY présente)")
+	} else {
+		log.Printf("Devin ACU source: absente (pas de DEVIN_API_KEY)")
+	}
+
+	h := handler.New(fetcher, weights, devSrc)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.Dashboard)
 	mux.HandleFunc("/api/usage", h.APIUsage)
+	mux.HandleFunc("/api/devin", h.APIDevin)
 	mux.HandleFunc("/health", h.Health)
 
 	srv := &http.Server{

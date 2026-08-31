@@ -100,8 +100,9 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 
 | Route | Description |
 |-------|-------------|
-| `GET /` | Dashboard HTML : feu par abonnement + feu global |
-| `GET /api/usage` | JSON des quotas, enrichi du budget calculé |
+| `GET /` | Dashboard HTML : feu par abonnement + feu global + section Devin (optionnelle) |
+| `GET /api/usage` | JSON des quotas OpenCode, enrichi du budget calculé |
+| `GET /api/devin` | JSON du quota ACU Devin (404 si non configuré) |
 | `GET /health` | Health check (`{"status":"ok"}`) |
 
 `/api/usage` conserve les champs existants (`label`, `windows`, `error`, `fetchedAt`, et par fenêtre
@@ -129,11 +130,23 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 | `BIFROST_URL` | `http://bifrost.openclaw.svc.cluster.local:8080` | Base URL du gateway Bifrost (lecture seule des poids de routage) |
 | `OPENCODE_GO_API_KEY` | — | Clé Go, affichée « Main » (au moins une clé requise) |
 | `OPENCODE_GO_API_KEY_<SUFFIXE>` | — | Clé supplémentaire, affichée « SUFFIXE » |
+| `DEVIN_API_KEY` | — | Token Devin (optionnel) — active la **section ACU Devin**, totalement séparée du lot OpenCode |
 
 Toute variable commençant par `OPENCODE_GO_API_KEY` est découverte automatiquement, et le label
 d'affichage est déduit du suffixe : `OPENCODE_GO_API_KEY_R` s'affiche « R »,
 `OPENCODE_GO_API_KEY_ALICE` s'affiche « Alice ». Ajouter ou retirer un abonnement ne demande
 aucune modification de code. L'ordre d'affichage suit le nom de la variable, pour rester stable.
+
+### Section Devin ACU (à part du lot OpenCode)
+
+Sans `DEVIN_API_KEY`, rien ne change : la section Devin est absente du dashboard et
+`/api/devin` répond 404. Avec le token, une carte « Devin — ACU » apparaît **en dessous**
+de la grille OpenCode : ACU consommés/limite, % du quota journalier et hebdo restants,
+date du reset hebdo. Les 4 clés OpenCode partagées ne sont jamais mélangées à Devin.
+
+⚠️ **API Devin : endpoint `/v3/self` non public — format d'assumption** (voir la PR) :
+`user_status.plan_info.{acu_consumed, acu_limit, daily_quota_remaining_percent,
+weekly_quota_remaining_percent, ...}`. À valider avec un vrai token avant merge.
 
 ## Développement local
 
