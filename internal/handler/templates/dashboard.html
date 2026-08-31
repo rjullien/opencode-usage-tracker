@@ -108,6 +108,20 @@
     grid-template-columns: repeat(auto-fit, minmax(430px, 1fr));
     gap: 1.25rem;
   }
+  .devin-section {
+    margin-top: 2rem;
+    border-top: 1px solid var(--border);
+    padding-top: 1.4rem;
+  }
+  .devin-section .agent-card {
+    max-width: 660px;
+  }
+  .badge-plain {
+    font-size: 0.7rem; font-weight: 600; color: var(--muted);
+    background: var(--card-2); border: 1px solid var(--border);
+    padding: 0.15rem 0.55rem; border-radius: 99px;
+    margin-left: 0.5rem; vertical-align: middle;
+  }
   .agent-card {
     background: var(--card);
     border: 1px solid var(--border);
@@ -307,6 +321,59 @@
     </div>
   {{end}}
   </div>
+
+  {{/* ---------------- Devin ACU (section séparée, hors lot OpenCode) ---------------- */}}
+  {{if .Devin}}
+    {{$d := .Devin}}
+    <div class="devin-section">
+      <div class="agent-card{{if $d.Status.Error}} error{{end}}">
+        <div class="agent-header">
+          <h3>Devin — ACU <span class="badge-plain">hors lot OpenCode</span></h3>
+          {{if $d.Status.Error}}
+            <span class="badge red"><span class="dot-sm red"></span>injoignable</span>
+          {{else}}
+            <span class="badge green"><span class="dot-sm green"></span>consommation</span>
+          {{end}}
+        </div>
+
+        {{if $d.Status.Error}}
+          <div class="error-msg">{{$d.Status.Error}}</div>
+        {{else}}
+          <div class="window lead">
+            <div class="window-header">
+              <span class="window-label">ACU consommés</span>
+              <span class="window-pct green">{{fmtACU $d.Status.ACUConsumed}} ACU</span>
+            </div>
+            <div class="lines">
+              <div class="line">
+                <span class="num">période couverte : {{$d.Status.DayCount}} jour(s)</span>
+                <span class="num">{{fmtACU $d.Status.ACUConsumed}} au total</span>
+              </div>
+              {{with $d.Status.Days}}
+                {{$last := index (lastDays .) 0}}
+                <div class="line">
+                  <span class="num">dernier relevé : {{fmtDay $last.Date}}</span>
+                  <span class="num">{{fmtACU $last.ACUs}} ACU</span>
+                </div>
+                <div class="line muted">
+                  <span class="num">répartition : devin {{fmtACU (productACU $last.ACUsByProduct "devin")}} · cascade {{fmtACU (productACU $last.ACUsByProduct "cascade")}} · terminal {{fmtACU (productACU $last.ACUsByProduct "terminal")}}</span>
+                </div>
+              {{end}}
+              <div class="line muted">
+                <span class="num">org {{$d.Status.OrgID}}</span>
+              </div>
+              <div class="line muted">
+                <span class="num">reset budget</span>
+                <span class="num">{{fmtDate $d.ResetAt}}</span>
+              </div>
+            </div>
+          </div>
+        {{end}}
+
+        <div class="fetch-time">relevé {{fmtTime $d.Status.FetchedAt}}</div>
+      </div>
+    </div>
+  {{end}}
 
   <div class="legend">
     <h4>Comment lire les couleurs</h4>

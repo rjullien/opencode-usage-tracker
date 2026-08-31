@@ -100,8 +100,9 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 
 | Route | Description |
 |-------|-------------|
-| `GET /` | Dashboard HTML : feu par abonnement + feu global |
-| `GET /api/usage` | JSON des quotas, enrichi du budget calculé |
+| `GET /` | Dashboard HTML : feu par abonnement + feu global + section Devin (optionnelle) |
+| `GET /api/usage` | JSON des quotas OpenCode, enrichi du budget calculé |
+| `GET /api/devin` | JSON du quota ACU Devin (404 si non configuré) |
 | `GET /health` | Health check (`{"status":"ok"}`) |
 
 `/api/usage` conserve les champs existants (`label`, `windows`, `error`, `fetchedAt`, et par fenêtre
@@ -129,11 +130,31 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 | `BIFROST_URL` | `http://bifrost.openclaw.svc.cluster.local:8080` | Base URL du gateway Bifrost (lecture seule des poids de routage) |
 | `OPENCODE_GO_API_KEY` | — | Clé Go, affichée « Main » (au moins une clé requise) |
 | `OPENCODE_GO_API_KEY_<SUFFIXE>` | — | Clé supplémentaire, affichée « SUFFIXE » |
+| `DEVIN_API_KEY` | — | Token Devin (optionnel) — active la **section ACU Devin**, totalement séparée du lot OpenCode |
+| `DEVIN_RESET_DAY` | `5` | Jour du mois du reset de budget Devin (plan Pro individuel, non exposé par l'API) |
 
 Toute variable commençant par `OPENCODE_GO_API_KEY` est découverte automatiquement, et le label
 d'affichage est déduit du suffixe : `OPENCODE_GO_API_KEY_R` s'affiche « R »,
 `OPENCODE_GO_API_KEY_ALICE` s'affiche « Alice ». Ajouter ou retirer un abonnement ne demande
 aucune modification de code. L'ordre d'affichage suit le nom de la variable, pour rester stable.
+
+### Section Devin ACU (à part du lot OpenCode)
+
+Sans `DEVIN_API_KEY`, rien ne change : la section Devin est absente du dashboard et
+`/api/devin` répond 404. Avec un token `cog_` (PAT ou service user), une carte
+« Devin — ACU » apparaît **en dessous** de la grille OpenCode : total ACU consommés,
+jours de consommation, répartition par produit (devin/cascade/terminal), org.
+Les 4 clés OpenCode partagées ne sont jamais mélangées à Devin.
+
+**API utilisée (validée 31/08/2026 avec un PAT `cog_`) :**
+- `GET /v3/self` → identité + `org_id`
+- `GET /v3/organizations/{org_id}/consumption/daily` → `{total_acus, consumption_by_date[{date, acus, acus_by_product}]}`
+
+⚠️ L'API publique n'expose **pas** la limite ACU du plan (`acu_limit`,
+`daily_quota_remaining_percent`) : elle ne vit que dans le gRPC interne du CLI.
+Le board affiche la **consommation réelle**, pas un pourcentage. La date de
+**reset budget** est fixée au **5 du mois** (`DEVIN_RESET_DAY`, défaut 5) —
+valeur du plan Pro individuel, l'API REST ne la renvoie pas.
 
 ## Développement local
 

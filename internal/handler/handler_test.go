@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/rjullien/opencode-usage-tracker/internal/devin"
 	"github.com/rjullien/opencode-usage-tracker/internal/opencode"
 )
 
@@ -73,7 +74,7 @@ func newTestHandler(t *testing.T) *Handler {
 		"OPENCODE_GO_API_KEY_A": 0,
 		"OPENCODE_GO_API_KEY_N": 1,
 		"OPENCODE_GO_API_KEY_R": 1,
-	})
+	}, nil) // pas de source Devin dans les tests OpenCode existants
 	h.now = func() time.Time { return captureNow }
 	return h
 }
@@ -420,5 +421,118 @@ func TestDisplayTimesUseParisLocalTime(t *testing.T) {
 	winter := mustTime("2026-01-15T23:30:00Z")
 	if got := fmtTime(winter); got != "00:30" {
 		t.Errorf("fmtTime(winter) = %q, want 00:30 (Europe/Paris, winter time)", got)
+	}
+}
+
+// ---- Devin ACU : la section est séparée du lot OpenCode et optionnelle ----
+
+// stubPoller renvoie zéro abonnement OpenCode : utile pour tester la section
+// Devin seule, sans dépendre du fetch OpenCode.
+type emptyPoller struct{}
+
+func (emptyPoller) Statuses() []opencode.AgentStatus { return nil }
+
+// stubDevin est une source Devin de test.
+type stubDevin struct{ s *devin.Status }
+
+func (st stubDevin) Statuses() *devin.Status { return st.s }
+
+func devinStatusOK() *devin.Status {
+	return &devin.Status{
+		ACUConsumed: 42.5,
+		DayCount:    2,
+		OrgID:       "org-93932dfb42b443c78ba280183a3d697d",
+		Days: []devin.DayUsage{
+			{
+				Date:          mustTime("2026-08-31T00:00:00Z"),
+				ACUs:          12.5,
+				ACUsByProduct: devin.ACUsByProduct{Devin: 12.5, Cascade: 0, Terminal: 0},
+			},
+			{
+				Date:          mustTime("2026-08-30T00:00:00Z"),
+				ACUs:          30,
+				ACUsByProduct: devin.ACUsByProduct{Devin: 20, Cascade: 5, Terminal: 5},
+			},
+		},
+		FetchedAt: captureNow,
+	}
+}
+
+func TestDashboardWithDevinSection(t *testing.T) {
+	h := New(stubPoller{}, nil, stubDevin{s: devinStatusOK()})
+	body := renderDashboard(t, h)
+
+	mustContain(t, body,
+		"Devin — ACU",
+		"hors lot OpenCode",
+		"42,5 ACU",
+		"2 jour(s)",
+		"dernier relevé",
+		"répartition : devin 12,5",
+		"org-93932dfb42b443c78ba280183a3d697d",
+		"reset budget",
+	)
+}
+
+func TestDashboardDevinAbsentWithoutSource(t *testing.T) {
+	h := newTestHandler(t) // nil → aucune source Devin
+	body := renderDashboard(t, h)
+
+	if strings.Contains(body, "Devin") {
+		t.Error("section Devin présente alors qu'aucune source n'est câblée")
+	}
+}
+
+func TestDashboardDevinErrorRendered(t *testing.T) {
+	h := New(emptyPoller{}, nil, stubDevin{
+		s: &devin.Status{Error: "token Devin invalide ou expiré (HTTP 401)", FetchedAt: captureNow},
+	})
+	body := renderDashboard(t, h)
+
+	mustContain(t, body, "injoignable", "token Devin invalide ou expiré")
+}
+
+func TestAPIDevin(t *testing.T) {
+	h := New(emptyPoller{}, nil, stubDevin{s: devinStatusOK()})
+	rec := httptest.NewRecorder()
+	h.APIDevin(rec, httptest.NewRequest(http.MethodGet, "/api/devin", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var got devin.Status
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.ACUConsumed != 42.5 || got.OrgID != "org-93932dfb42b443c78ba280183a3d697d" {
+		t.Errorf("got %+v, want consumption 42.5 / org-93932dfb42b443c78ba280183a3d697d", got)
+	}
+}
+
+func TestAPIDevinNotFoundWithoutSource(t *testing.T) {
+	h := newTestHandler(t)
+	rec := httptest.NewRecorder()
+	h.APIDevin(rec, httptest.NewRequest(http.MethodGet, "/api/devin", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404 sans source Devin", rec.Code)
+	}
+}
+
+func TestNextResetDay(t *testing.T) {
+	// Le 3 du mois → reset le 5 du même mois.
+	early := mustTime("2026-09-03T10:00:00Z")
+	if got := nextResetDay(early); got.Day() != 5 || got.Month() != time.September {
+		t.Errorf("nextResetDay(03/09) = %v, want 05/09", got)
+	}
+	// Le 7 du mois → reset le 5 du mois suivant.
+	late := mustTime("2026-09-07T10:00:00Z")
+	if got := nextResetDay(late); got.Day() != 5 || got.Month() != time.October {
+		t.Errorf("nextResetDay(07/09) = %v, want 05/10", got)
+	}
+	// Le 5 exactement : déjà passé 00:00 → mois suivant.
+	onDay := mustTime("2026-09-05T00:00:00Z")
+	if got := nextResetDay(onDay); got.Month() != time.October {
+		t.Errorf("nextResetDay(05/09 00:00) = %v, want 05/10", got)
 	}
 }

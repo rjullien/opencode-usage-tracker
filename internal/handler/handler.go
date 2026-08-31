@@ -18,6 +18,7 @@ import (
 	// depends on it, rather than in main.
 	_ "time/tzdata"
 
+	"github.com/rjullien/opencode-usage-tracker/internal/devin"
 	"github.com/rjullien/opencode-usage-tracker/internal/opencode"
 )
 
@@ -51,11 +52,20 @@ type WeightsSource interface {
 	WeightsByEnv() (map[string]float64, error)
 }
 
+// DevinSource supplies the Devin ACU quota status. It is OPTIONAL and entirely
+// separate from the shared OpenCode subscriptions: when no DEVIN_API_KEY is
+// configured the source returns nil and the dashboard simply omits the Devin
+// section. A failing Devin fetch must never disturb the OpenCode rendering.
+type DevinSource interface {
+	Statuses() *devin.Status
+}
+
 // Handler serves the dashboard and API.
 type Handler struct {
 	tmpl    *template.Template
 	poller  Poller
 	weights WeightsSource
+	devin   DevinSource
 
 	// now is injectable so the rendered budget can be asserted deterministically.
 	now func() time.Time
@@ -63,7 +73,8 @@ type Handler struct {
 
 // New creates a Handler with embedded templates. weights may be nil: the
 // dashboard degrades to "poids inconnu" when no Bifrost source is wired.
-func New(poller Poller, weights WeightsSource) *Handler {
+// devin may also be nil: the Devin section is then omitted entirely.
+func New(poller Poller, weights WeightsSource, devin DevinSource) *Handler {
 	funcMap := template.FuncMap{
 		"levelLabel": levelLabel,
 		"fmtTime":    fmtTime,
@@ -76,13 +87,16 @@ func New(poller Poller, weights WeightsSource) *Handler {
 		"clamp":      clamp,
 		"weightText": weightText,
 		"weightZero": weightZero,
+		"fmtACU":     fmtACU,
+		"lastDays":   lastDays,
+		"productACU": productACU,
 	}
 
 	tmpl := template.Must(
 		template.New("").Funcs(funcMap).ParseFS(templatesFS, "templates/*.html"),
 	)
 
-	return &Handler{tmpl: tmpl, poller: poller, weights: weights, now: time.Now}
+	return &Handler{tmpl: tmpl, poller: poller, weights: weights, devin: devin, now: time.Now}
 }
 
 // WindowView is a quota window plus its budget position. JSON field names match
@@ -138,11 +152,44 @@ type PoolView struct {
 type DashboardData struct {
 	Agents   []AgentView
 	Pool     PoolView
+	Devin    *DevinView
 	Now      time.Time
 	KeyCount int
 }
 
-func buildDashboardData(statuses []opencode.AgentStatus, weights map[string]float64, now time.Time) DashboardData {
+// DevinView est la section ACU Devin, totalement séparée des abonnements
+// OpenCode partagés. nil quand aucun token n'est configuré (section absente).
+//
+// Pas de pourcentage ni de feu : l'API publique Devin n'expose pas la limite
+// ACU (le gRPC interne du CLI seulement). On affiche la consommation réelle.
+// ResetAt est le prochain reset de budget : fixé au N du mois (le plan Devin
+// ne l'expose pas via l'API REST) — voir devin.ResetDayFromEnv.
+type DevinView struct {
+	Status devin.Status
+	// ResetAt : prochain jour de reset (5 du mois par défaut).
+	ResetAt time.Time
+}
+
+func buildDevinView(s *devin.Status, now time.Time) *DevinView {
+	if s == nil {
+		return nil
+	}
+	return &DevinView{Status: *s, ResetAt: nextResetDay(now)}
+}
+
+// nextResetDay calcule la prochaine occurrence du jour N du mois (défaut 5).
+// Si on est déjà passé le jour N ce mois-ci, on prend le mois suivant.
+func nextResetDay(now time.Time) time.Time {
+	day := devin.ResetDayFromEnv()
+	year, month, _ := now.Date()
+	candidate := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+	if !candidate.After(now) {
+		candidate = time.Date(year, month+1, day, 0, 0, 0, 0, time.UTC)
+	}
+	return candidate
+}
+
+func buildDashboardData(statuses []opencode.AgentStatus, weights map[string]float64, devSrc DevinSource, now time.Time) DashboardData {
 	agents := make([]AgentView, 0, len(statuses))
 
 	for _, s := range statuses {
@@ -192,9 +239,18 @@ func buildDashboardData(statuses []opencode.AgentStatus, weights map[string]floa
 	return DashboardData{
 		Agents:   agents,
 		Pool:     buildPool(agents),
+		Devin:    buildDevinView(statusesDev(devSrc), now),
 		Now:      now,
 		KeyCount: len(agents),
 	}
+}
+
+// statusesDev extrait le statut Devin de la source optionnelle.
+func statusesDev(s DevinSource) *devin.Status {
+	if s == nil {
+		return nil
+	}
+	return s.Statuses()
 }
 
 func buildPool(agents []AgentView) PoolView {
@@ -277,7 +333,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.now())
+	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.devin, h.now())
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.tmpl.ExecuteTemplate(w, "dashboard.html", data); err != nil {
@@ -287,11 +343,29 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 
 // APIUsage returns JSON usage data, enriched with the budget position.
 func (h *Handler) APIUsage(w http.ResponseWriter, r *http.Request) {
-	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.now())
+	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.devin, h.now())
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	enc.Encode(data.Agents)
+}
+
+// APIDevin returns the Devin ACU status (assumption API — à valider avec un
+// vrai token). 404 quand aucun token n'est configuré, 200 avec le JSON sinon.
+func (h *Handler) APIDevin(w http.ResponseWriter, r *http.Request) {
+	if h.devin == nil {
+		http.NotFound(w, r)
+		return
+	}
+	s := h.devin.Statuses()
+	if s == nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	enc.Encode(s)
 }
 
 // Health returns 200 OK.
@@ -428,4 +502,40 @@ func weightText(w *float64) string {
 // weightZero reports whether a known weight is exactly 0 (key out of rotation).
 func weightZero(w *float64) bool {
 	return w != nil && *w == 0
+}
+
+// fmtACU rend une quantité d'ACU lisible : "42,5" — sans unité (l'unité est
+// dans le libellé de la ligne). Valeurs entières sans décimale superflue.
+func fmtACU(v float64) string {
+	if v == float64(int64(v)) {
+		return strconv.FormatInt(int64(v), 10)
+	}
+	return strings.Replace(strconv.FormatFloat(v, 'f', 1, 64), ".", ",", 1)
+}
+
+// lastDays renvoie les jours de consommation ACU triés du plus récent au plus
+// ancien (le premier élément est le dernier relevé). L'API ne garantit pas
+// l'ordre ; on trie explicitement par date décroissante.
+func lastDays(days []devin.DayUsage) []devin.DayUsage {
+	out := make([]devin.DayUsage, len(days))
+	copy(out, days)
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j].Date.After(out[j-1].Date); j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out
+}
+
+// productACU extrait la consommation d'un produit donné (devin/cascade/terminal).
+func productACU(p devin.ACUsByProduct, name string) float64 {
+	switch name {
+	case "devin":
+		return p.Devin
+	case "cascade":
+		return p.Cascade
+	case "terminal":
+		return p.Terminal
+	}
+	return 0
 }
