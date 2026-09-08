@@ -132,7 +132,7 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 | `OPENCODE_GO_API_KEY_<SUFFIXE>` | — | Clé supplémentaire, affichée « SUFFIXE » |
 | `DEVIN_API_KEY` | — | Token Devin (optionnel) — active la **section ACU Devin**, totalement séparée du lot OpenCode |
 | `DEVIN_ORG_ID` | — | Organisation Devin (`org-...`) à interroger, optionnelle : indispensable quand le token est un PAT dont `/v3/self` ne renvoie pas d'`org_id` |
-| `DEVIN_RESET_DAY` | `5` | Jour du mois du reset de budget Devin (plan Pro individuel, non exposé par l'API) |
+| `DEVIN_RESET_DAY` | `5` | Jour du mois du reset de budget Devin (plan Pro individuel, non exposé par l'API). Seules les valeurs `1`–`28` sont retenues : au-delà, tous les mois n'ont pas ce jour, et la variable retombe sur le défaut `5` |
 
 Toute variable commençant par `OPENCODE_GO_API_KEY` est découverte automatiquement, et le label
 d'affichage est déduit du suffixe : `OPENCODE_GO_API_KEY_R` s'affiche « R »,
@@ -163,18 +163,38 @@ vides, la section Devin s'affiche en erreur avec un message qui nomme `DEVIN_ORG
 `principal_type` reçu. L'identifiant `org-...` se lit dans l'URL de l'app Devin
 (ou dans la réponse d'un token de service user d'organisation).
 
+**À faire au déploiement.** Le code rend le cas diagnosticable, il ne le devine pas : si le
+log de boot affiche `DEVIN_ORG_ID absent (org lue dans /v3/self)` **et** que la section
+reste en erreur, c'est que le token ne porte pas d'organisation. Il faut alors fournir
+l'org — `ENV DEVIN_ORG_ID=org-...` dans le `Dockerfile` (ligne commentée prête à l'emploi)
+puis reconstruire l'image, ou la variable côté déploiement. Aucune valeur n'est inventée
+ici, et rien de tout cela n'est obligatoire pour démarrer.
+
 **Fenêtre interrogée.** La requête est explicitement bornée sur le cycle de facturation
 courant (`time_after`/`time_before` en secondes Unix) déduit de `DEVIN_RESET_DAY`, avec la
 frontière de journée documentée par la spec : minuit PST, soit **08:00:00 UTC** (décalage
-fixe, jamais PDT). Sans ces bornes l'API renvoie sa fenêtre par défaut, qui n'a aucune
-raison de coïncider avec le cycle affiché. La ligne « cycle du … au … » et la date de
-**reset budget** sont exactement ces deux bornes, et `/api/devin` les expose
-(`cycleStart`, `cycleEnd`).
+fixe, jamais PDT — la spec demande explicitement des timestamps alignés sur cet offset).
+Sans ces bornes l'API renvoie sa fenêtre par défaut, qui n'a aucune raison de coïncider
+avec le cycle affiché. `time_before` est plafonné à l'instant courant : la fin de cycle est
+dans le futur, la spec documente un `422` sur cet endpoint sans rien dire des bornes
+futures, et aucune consommation ne peut exister après maintenant. La ligne
+« cycle du … au … » et la date de **reset budget** restent les bornes du cycle, que
+`/api/devin` expose (`cycleStart`, `cycleEnd`, absents quand le fetch a échoué).
+
+⚠️ Reste à recouper en production : la spec ne dit pas à quel instant de la journée les
+clés `date` de `consumption_by_date` sont posées. Si elles tombaient à minuit UTC et non à
+08:00 UTC, le total serait décalé d'une journée par rapport au libellé du cycle. À vérifier
+en comparant le total affiché à l'UI Devin au premier passage de cycle.
 
 **Diagnostic.** Le token est trimmé avant usage (un secret monté depuis Kubernetes porte
 souvent un `\n` final, qui produisait un 401 interprété à tort comme un token expiré). Les
-logs de boot et les erreurs 401/403 portent la longueur et une empreinte SHA-256 tronquée
-de la clé (`len=44 sha256=1a2b3c4d`), jamais la clé elle-même.
+**logs du pod** (boot et rejets 401/403) portent la longueur et une empreinte SHA-256
+tronquée de la clé (`len=44 sha256=1a2b3c4d`), jamais la clé elle-même. Le dashboard et
+`/api/devin` étant servis sans authentification, le message qui y apparaît reste
+diagnostique mais sans empreinte : il nomme la variable à vérifier et renvoie aux logs.
+Les erreurs distinguent la clé de l'organisation : un `401` (ou un `403` sur `/v3/self`)
+accuse `DEVIN_API_KEY`, un `403` ou un `404` sur `/v3/organizations/{org}/…` accuse
+`DEVIN_ORG_ID` en citant l'org réellement interrogée.
 
 ⚠️ L'API publique n'expose **pas** la limite ACU du plan (`acu_limit`,
 `daily_quota_remaining_percent`) : elle ne vit que dans le gRPC interne du CLI.

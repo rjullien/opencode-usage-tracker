@@ -1,6 +1,7 @@
 package devin
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -40,9 +41,18 @@ func (s *devinServer) consumption() (string, url.Values) {
 
 // testServer simule les deux endpoints Devin que le client appelle dans
 // l'ordre : /v3/self (identité, org_id éventuel) puis
-// /v3/organizations/{org}/consumption/daily. L'en-tête Authorization doit être
-// exactement « Bearer test-token » : tout espace ou \n parasite est un échec.
+// /v3/organizations/{org}/consumption/daily, avec le même code de statut sur les
+// deux. L'en-tête Authorization doit être exactement « Bearer test-token » :
+// tout espace ou \n parasite est un échec.
 func testServer(t *testing.T, selfBody, consumptionBody string, status int) *devinServer {
+	t.Helper()
+	return testServerStatuts(t, selfBody, status, consumptionBody, status)
+}
+
+// testServerStatuts permet un code de statut différent par endpoint : c'est le
+// seul moyen d'exercer un /v3/self valide suivi d'un 403 ou d'un 404 sur
+// l'organisation, cas d'un DEVIN_ORG_ID erroné.
+func testServerStatuts(t *testing.T, selfBody string, selfStatus int, consumptionBody string, consumptionStatus int) *devinServer {
 	t.Helper()
 	rec := &devinServer{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -58,14 +68,14 @@ func testServer(t *testing.T, selfBody, consumptionBody string, status int) *dev
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.URL.Path == "/v3/self":
-			w.WriteHeader(status)
+			w.WriteHeader(selfStatus)
 			w.Write([]byte(selfBody))
 		case strings.Contains(r.URL.Path, "/consumption/daily"):
 			rec.mu.Lock()
 			rec.consumptionPath = r.URL.Path
 			rec.consumptionQuery = r.URL.Query()
 			rec.mu.Unlock()
-			w.WriteHeader(status)
+			w.WriteHeader(consumptionStatus)
 			w.Write([]byte(consumptionBody))
 		default:
 			http.Error(w, "unknown path "+r.URL.Path, 404)
@@ -107,12 +117,18 @@ const selfBodySansOrg = `{
   "api_key_name": "n"
 }`
 
+// consumptionBody décrit une réponse POSSIBLE pour la fenêtre assertée par les
+// tests, à savoir le cycle 05/09 → 05/10 2026 : les clés `date` tombent dans ce
+// cycle et sont alignées sur la frontière de journée 08:00 UTC (minuit PST), la
+// seule que la spec documente pour cet endpoint. Une fixture hors fenêtre
+// resterait verte — le faux serveur ne filtre pas — mais cesserait de décrire le
+// comportement attendu.
 const consumptionBody = `{
   "total_acus": 42.5,
   "consumption_by_date": [
-    {"date": 1788393600, "acus": 12.5,
+    {"date": 1788681600, "acus": 12.5,
      "acus_by_product": {"devin": 12.5, "cascade": 0, "terminal": 0, "review": null}},
-    {"date": 1788480000, "acus": 30.0,
+    {"date": 1788768000, "acus": 30.0,
      "acus_by_product": {"devin": 20.0, "cascade": 5.0, "terminal": 5.0, "review": 0}}
   ]
 }`
@@ -124,6 +140,10 @@ const (
 	cycleStartSept2026 = int64(1788595200) // 2026-09-05T08:00:00Z
 	cycleStartOct2026  = int64(1791187200) // 2026-10-05T08:00:00Z
 	cycleStartAug2026  = int64(1785916800) // 2026-08-05T08:00:00Z
+	// nowDansCycleSept est l'instant figé des tests de fenêtrage : il tombe dans
+	// le cycle de septembre, et c'est lui que time_before doit porter (la fin de
+	// cycle, elle, est dans le futur).
+	nowDansCycleSept = int64(1789905600) // 2026-09-20T12:00:00Z
 )
 
 func TestParseResponse(t *testing.T) {
@@ -142,8 +162,11 @@ func TestParseResponse(t *testing.T) {
 	if s.OrgID != "org-93932dfb42b443c78ba280183a3d697d" {
 		t.Errorf("OrgID = %q", s.OrgID)
 	}
+	if s.CycleStart == nil || s.CycleEnd == nil {
+		t.Fatalf("bornes du cycle absentes : %+v", s)
+	}
 	if !s.CycleStart.Equal(start) || !s.CycleEnd.Equal(end) {
-		t.Errorf("cycle = %v → %v, want %v → %v", s.CycleStart, s.CycleEnd, start, end)
+		t.Errorf("cycle = %v → %v, want %v → %v", *s.CycleStart, *s.CycleEnd, start, end)
 	}
 	if len(s.Days) != 2 {
 		t.Fatalf("Days len = %d, want 2", len(s.Days))
@@ -157,7 +180,9 @@ func TestParseResponse(t *testing.T) {
 }
 
 func TestParseResponseEmpty(t *testing.T) {
-	s, err := parseResponse([]byte(`{"total_acus":0.0,"consumption_by_date":[]}`), "org-x", time.Time{}, time.Time{})
+	start := time.Unix(cycleStartSept2026, 0).UTC()
+	end := time.Unix(cycleStartOct2026, 0).UTC()
+	s, err := parseResponse([]byte(`{"total_acus":0.0,"consumption_by_date":[]}`), "org-x", start, end)
 	if err != nil {
 		t.Fatalf("parseResponse: %v", err)
 	}
@@ -167,7 +192,8 @@ func TestParseResponseEmpty(t *testing.T) {
 }
 
 func TestParseResponseMalformed(t *testing.T) {
-	_, err := parseResponse([]byte(`{not json`), "org-x", time.Time{}, time.Time{})
+	_, err := parseResponse([]byte(`{not json`),
+		"org-x", time.Unix(cycleStartSept2026, 0).UTC(), time.Unix(cycleStartOct2026, 0).UTC())
 	if err == nil {
 		t.Fatal("expected JSON parse error")
 	}
@@ -335,13 +361,77 @@ func TestFetchStatus401MessageDiagnostique(t *testing.T) {
 		t.Fatal("expected auth error")
 	}
 	msg := err.Error()
-	for _, want := range []string{"HTTP 401", "DEVIN_API_KEY", Fingerprint("test-token")} {
+	for _, want := range []string{"HTTP 401", "DEVIN_API_KEY", "logs du pod"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message sans %q : %s", want, msg)
 		}
 	}
 	if strings.Contains(msg, "test-token") {
 		t.Errorf("le token brut apparaît dans le message : %s", msg)
+	}
+	// Ce message finit dans Status.Error, donc dans la page HTML et dans
+	// /api/devin, servis sans authentification : l'empreinte reste aux logs.
+	if strings.Contains(msg, Fingerprint("test-token")) || strings.Contains(msg, "sha256=") || strings.Contains(msg, "len=") {
+		t.Errorf("l'empreinte de la clé est exposée dans le message rendu : %s", msg)
+	}
+}
+
+// ---- Diagnostic d'un DEVIN_ORG_ID erroné : 403 et 404 sur le chemin de l'org ----
+
+func TestFetchStatusErreursOrgAccusentLOrgPasLaCle(t *testing.T) {
+	// /v3/self répond 200 (le token est bon), c'est l'organisation qui est
+	// refusée (403) ou inconnue (404) : le diagnostic doit nommer DEVIN_ORG_ID.
+	for _, code := range []int{403, 404} {
+		t.Run(fmt.Sprintf("HTTP %d", code), func(t *testing.T) {
+			srv := testServerStatuts(t, selfBodySansOrg, 200, `{"detail":"nope"}`, code)
+			cfg := testConfig(srv.URL)
+			cfg.OrgID = "org-mal-saisi"
+			c := NewClient(cfg)
+
+			_, err := c.FetchStatus()
+			if err == nil {
+				t.Fatalf("expected error on HTTP %d", code)
+			}
+			msg := err.Error()
+			for _, want := range []string{"org-mal-saisi", "DEVIN_ORG_ID", fmt.Sprintf("HTTP %d", code)} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("message sans %q : %s", want, msg)
+				}
+			}
+			if strings.Contains(msg, "DEVIN_API_KEY") {
+				t.Errorf("le message accuse la clé alors que l'org est en cause : %s", msg)
+			}
+		})
+	}
+}
+
+func TestFetchStatus403SurSelfAccuseLaCle(t *testing.T) {
+	// Hors chemin d'organisation, un 403 reste un problème de clé : c'est ce que
+	// renvoie l'API à un token bidon (constaté au smoke avec « cog_invalide »).
+	srv := testServer(t, `{"detail":"forbidden"}`, `{}`, 403)
+	c := NewClient(testConfig(srv.URL))
+
+	_, err := c.FetchStatus()
+	if err == nil {
+		t.Fatal("expected auth error")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "DEVIN_API_KEY") || !strings.Contains(msg, "HTTP 403") {
+		t.Errorf("message = %s, want une mention de DEVIN_API_KEY et de HTTP 403", msg)
+	}
+}
+
+func TestOrgFromPath(t *testing.T) {
+	cases := map[string]string{
+		"/v3/organizations/org-42/consumption/daily":                       "org-42",
+		"/v3/organizations/org-42/consumption/daily?time_after=1&time_b=2": "org-42",
+		"/v3/organizations/org%20espace/consumption/daily":                 "org espace",
+		"/v3/self":          "",
+		"/v3/organizations": "",
+	}
+	for path, want := range cases {
+		if got := orgFromPath(path); got != want {
+			t.Errorf("orgFromPath(%q) = %q, want %q", path, got, want)
+		}
 	}
 }
 
@@ -398,14 +488,14 @@ func TestCycleBounds(t *testing.T) {
 			wantEndUTC: "2026-03-28T08:00:00Z",
 		},
 		{
-			name:       "resetDay 31 hors bornes : clampé au défaut 5",
+			name:       "resetDay 31 hors bornes : repli sur le défaut 5",
 			now:        "2026-09-20T12:00:00Z",
 			resetDay:   31,
 			wantStart:  cycleStartSept2026,
 			wantEndUTC: "2026-10-05T08:00:00Z",
 		},
 		{
-			name:       "resetDay 0 hors bornes : clampé au défaut 5",
+			name:       "resetDay 0 hors bornes : repli sur le défaut 5",
 			now:        "2026-09-20T12:00:00Z",
 			resetDay:   0,
 			wantStart:  cycleStartSept2026,
@@ -456,12 +546,31 @@ func TestFetchStatusEnvoieLaFenetreDuCycle(t *testing.T) {
 	if got, want := query.Get("time_after"), "1788595200"; got != want {
 		t.Errorf("time_after = %q, want %q (05/09/2026 08:00 UTC)", got, want)
 	}
-	if got, want := query.Get("time_before"), "1791187200"; got != want {
-		t.Errorf("time_before = %q, want %q (05/10/2026 08:00 UTC)", got, want)
+	// La borne haute envoyée est plafonnée à maintenant : la fin de cycle est
+	// dans le futur, et la spec documente un 422 sur cet endpoint sans rien dire
+	// des bornes futures.
+	if got, want := query.Get("time_before"), "1789905600"; got != want {
+		t.Errorf("time_before = %q, want %q (20/09/2026 12:00 UTC, plafonné à maintenant)", got, want)
+	}
+	// Le Status, lui, porte la fin de CYCLE : c'est la période facturée qu'affiche
+	// le dashboard, pas la borne de requête.
+	if s.CycleStart == nil || s.CycleEnd == nil {
+		t.Fatalf("bornes du Status absentes : %+v", s)
 	}
 	if s.CycleStart.Unix() != 1788595200 || s.CycleEnd.Unix() != 1791187200 {
 		t.Errorf("bornes du Status = %d → %d, want 1788595200 → 1791187200",
 			s.CycleStart.Unix(), s.CycleEnd.Unix())
+	}
+}
+
+func TestFetchStatusNePlafonnePasUneFenetrePassee(t *testing.T) {
+	// Horloge exactement sur la fin de cycle : rien à plafonner, la borne envoyée
+	// est la fin de cycle elle-même (cas limite de cappedEnd).
+	if got := cappedEnd(time.Unix(cycleStartOct2026, 0), time.Unix(cycleStartOct2026, 0)); got.Unix() != cycleStartOct2026 {
+		t.Errorf("cappedEnd(now == end) = %d, want %d", got.Unix(), cycleStartOct2026)
+	}
+	if got := cappedEnd(time.Unix(cycleStartOct2026, 0), time.Unix(nowDansCycleSept, 0)); got.Unix() != nowDansCycleSept {
+		t.Errorf("cappedEnd(now < end) = %d, want %d", got.Unix(), nowDansCycleSept)
 	}
 }
 

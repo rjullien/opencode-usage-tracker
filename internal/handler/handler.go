@@ -182,12 +182,12 @@ func buildDevinView(s *devin.Status, now time.Time) *DevinView {
 
 	// Les bornes portées par le Status sont celles réellement interrogées :
 	// elles priment sur le recalcul local, qui ne sert que de repli quand le
-	// Status vient d'ailleurs (statut en erreur, source de test).
-	if !s.CycleStart.IsZero() {
-		v.CycleStart = s.CycleStart
+	// Status n'en porte pas (statut en erreur, source de test).
+	if s.CycleStart != nil {
+		v.CycleStart = *s.CycleStart
 	}
-	if !s.CycleEnd.IsZero() {
-		v.ResetAt = s.CycleEnd
+	if s.CycleEnd != nil {
+		v.ResetAt = *s.CycleEnd
 	}
 	return v
 }

@@ -56,6 +56,12 @@ const (
 	consumptionPath = "/v3/organizations/%s/consumption/daily"
 )
 
+// orgPathPrefix préfixe les endpoints qui portent l'organisation dans leur
+// chemin. C'est le seul endroit où un 403 ou un 404 accuse DEVIN_ORG_ID et non
+// la clé : « ce token n'a pas accès à cette org » et « cette org n'existe pas »
+// sont les deux échecs les plus probables d'un DEVIN_ORG_ID mal renseigné.
+const orgPathPrefix = "/v3/organizations/"
+
 // defaultResetDay est le jour du mois où le budget du plan Pro individuel
 // repart à zéro (valeur constatée dans l'UI, non exposée par l'API REST).
 const defaultResetDay = 5
@@ -120,11 +126,16 @@ type Status struct {
 	// OrgID : organisation interrogée (DEVIN_ORG_ID sinon /v3/self).
 	OrgID string `json:"orgId,omitempty"`
 
-	// CycleStart / CycleEnd : bornes du cycle de facturation effectivement
-	// envoyées en time_after / time_before. Exposées pour que le dashboard
-	// affiche exactement la fenêtre interrogée, sans la recalculer.
-	CycleStart time.Time `json:"cycleStart"`
-	CycleEnd   time.Time `json:"cycleEnd"`
+	// CycleStart / CycleEnd : bornes du cycle de facturation interrogé.
+	// CycleStart est exactement le time_after envoyé ; CycleEnd est la fin du
+	// cycle, que la requête plafonne à maintenant (voir cappedEnd) puisqu'aucune
+	// consommation ne peut exister dans le futur.
+	//
+	// Pointeurs, et non des time.Time : sur un statut d'erreur aucune fenêtre
+	// n'a été interrogée, et /api/devin doit omettre ces champs plutôt que de
+	// publier « 0001-01-01T00:00:00Z » (omitempty est sans effet sur une struct).
+	CycleStart *time.Time `json:"cycleStart,omitempty"`
+	CycleEnd   *time.Time `json:"cycleEnd,omitempty"`
 
 	FetchedAt time.Time `json:"fetchedAt"`
 	Error     string    `json:"error,omitempty"`
@@ -146,7 +157,8 @@ type Config struct {
 	// OrgID : DEVIN_ORG_ID, prioritaire sur l'org_id de /v3/self. Indispensable
 	// quand le PAT ne porte pas d'organisation.
 	OrgID string
-	// ResetDay : jour du mois du reset de budget, clampé à [1,28].
+	// ResetDay : jour du mois du reset de budget. Hors [1,28] : repli sur le
+	// défaut 5 (voir resetDayOrDefault).
 	ResetDay int
 	// Timeout du client HTTP.
 	Timeout time.Duration
@@ -192,7 +204,7 @@ func NewClient(cfg Config) *Client {
 		// que l'on interprétait à tort comme un token expiré.
 		token:    strings.TrimSpace(cfg.Token),
 		orgID:    strings.TrimSpace(cfg.OrgID),
-		resetDay: clampResetDay(cfg.ResetDay),
+		resetDay: resetDayOrDefault(cfg.ResetDay),
 		now:      time.Now,
 	}
 }
@@ -215,11 +227,15 @@ func (c *Client) FetchStatus() (Status, error) {
 		return Status{}, err
 	}
 
-	start, end := CycleBounds(c.now(), c.resetDay)
-	body, err := c.getJSON(consumptionURL(orgID, start, end))
+	now := c.now()
+	start, end := CycleBounds(now, c.resetDay)
+	body, err := c.getJSON(consumptionURL(orgID, start, cappedEnd(end, now)))
 	if err != nil {
 		return Status{}, err
 	}
+	// Le Status porte la fin de CYCLE (celle qu'affiche « reset budget »), pas
+	// la borne plafonnée envoyée à l'API : la première est la période facturée,
+	// la seconde n'est qu'une précaution sur la requête.
 	return parseResponse(body, orgID, start, end)
 }
 
@@ -250,11 +266,48 @@ func (c *Client) resolveOrg(sr SelfResponse) (string, error) {
 // consumptionURL borne la requête sur le cycle de facturation : sans
 // time_after/time_before, l'API renvoie sa fenêtre par défaut, qui ne
 // correspond pas au cycle affiché par le dashboard.
+//
+// Les bornes sont alignées sur 08:00:00 UTC, ce que la spec demande
+// explicitement pour cet endpoint (« pass Unix timestamps that align with this
+// timezone offset (e.g., 1733385600 for December 5, 2025 at midnight PST) »).
+// Elle ne documente en revanche NI l'inclusivité de time_after, NI l'instant
+// exact auquel les clés `date` de consumption_by_date sont posées : si ces clés
+// tombaient à minuit UTC plutôt qu'à 08:00 UTC, le total serait décalé d'une
+// journée par rapport au libellé « cycle du … au … ». Indécidable sans un appel
+// authentifié réel (aucun token dans l'environnement de développement) : le
+// total doit être recoupé avec l'UI Devin au premier passage de cycle.
 func consumptionURL(orgID string, start, end time.Time) string {
 	q := url.Values{}
 	q.Set("time_after", strconv.FormatInt(start.Unix(), 10))
 	q.Set("time_before", strconv.FormatInt(end.Unix(), 10))
 	return fmt.Sprintf(consumptionPath, url.PathEscape(orgID)) + "?" + q.Encode()
+}
+
+// cappedEnd plafonne la borne haute de la requête à maintenant. La fin du cycle
+// courant est par construction dans le futur, la spec documente un 422 sur cet
+// endpoint et ne dit rien des bornes futures : comme aucune consommation ne peut
+// exister après maintenant, plafonner ne change pas le total renvoyé et supprime
+// le risque qu'une borne future fasse échouer toute la section.
+func cappedEnd(end, now time.Time) time.Time {
+	if now.Before(end) {
+		return now
+	}
+	return end
+}
+
+// orgFromPath extrait l'organisation d'un chemin /v3/organizations/{org}/… ,
+// et renvoie une chaîne vide quand le chemin n'en porte pas.
+func orgFromPath(path string) string {
+	p, _, _ := strings.Cut(path, "?")
+	rest, ok := strings.CutPrefix(p, orgPathPrefix)
+	if !ok {
+		return ""
+	}
+	org, _, _ := strings.Cut(rest, "/")
+	if unescaped, err := url.PathUnescape(org); err == nil {
+		return unescaped
+	}
+	return org
 }
 
 func (c *Client) getJSON(path string) ([]byte, error) {
@@ -277,20 +330,47 @@ func (c *Client) getJSON(path string) ([]byte, error) {
 		return nil, fmt.Errorf("read error: %w", err)
 	}
 
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		// L'empreinte (jamais le token) laisse une trace exploitable dans les
-		// logs du pod : elle permet de comparer la clé réellement envoyée à
-		// celle du secret sans jamais l'exposer.
-		fp := Fingerprint(c.token)
-		log.Printf("Devin: token refusé (HTTP %d) sur %s — DEVIN_API_KEY %s", resp.StatusCode, path, fp)
-		return nil, fmt.Errorf(
-			"token Devin refusé (HTTP %d) : clé absente, expirée ou hors scope — vérifier DEVIN_API_KEY %s",
-			resp.StatusCode, fp)
+	switch code := resp.StatusCode; {
+	case code == http.StatusOK:
+		return body, nil
+
+	case code == http.StatusForbidden || code == http.StatusNotFound:
+		// Sur le chemin de l'organisation, un 403 signifie « ce token n'a pas
+		// accès à cette org » et un 404 « cette org n'existe pas » : accuser
+		// DEVIN_API_KEY enverrait l'opérateur vérifier la mauvaise variable.
+		if org := orgFromPath(path); org != "" {
+			log.Printf("Devin: organisation %s inaccessible (HTTP %d) — DEVIN_API_KEY %s", org, code, Fingerprint(c.token))
+			return nil, fmt.Errorf(
+				"organisation Devin %s inaccessible (HTTP %d) : elle n'existe pas ou ce token n'y a pas accès — "+
+					"vérifier DEVIN_ORG_ID, ou utiliser un token rattaché à cette organisation",
+				org, code)
+		}
+		if code == http.StatusNotFound {
+			return nil, fmt.Errorf("HTTP %d: %s", code, truncate(string(body), 200))
+		}
+		return nil, c.tokenRefuseErr(code, path)
+
+	case code == http.StatusUnauthorized:
+		return nil, c.tokenRefuseErr(code, path)
+
+	default:
+		return nil, fmt.Errorf("HTTP %d: %s", code, truncate(string(body), 200))
 	}
-	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, truncate(string(body), 200))
-	}
-	return body, nil
+}
+
+// tokenRefuseErr construit le diagnostic d'un rejet de la clé elle-même.
+//
+// L'empreinte (jamais le token) part dans les logs du pod, où elle permet de
+// comparer la clé réellement envoyée à celle du secret. Elle ne part PAS dans
+// l'erreur retournée : celle-ci finit dans Status.Error, donc dans la page HTML
+// et dans /api/devin, tous deux servis sans authentification — la longueur
+// exacte de la clé et 32 bits de son empreinte n'ont rien à y faire.
+func (c *Client) tokenRefuseErr(code int, path string) error {
+	log.Printf("Devin: token refusé (HTTP %d) sur %s — DEVIN_API_KEY %s", code, path, Fingerprint(c.token))
+	return fmt.Errorf(
+		"token Devin refusé (HTTP %d) : clé absente, expirée ou hors scope — vérifier DEVIN_API_KEY "+
+			"(longueur et empreinte SHA-256 de la clé envoyée dans les logs du pod)",
+		code)
 }
 
 // parseResponse convertit la réponse consumption/daily en Status. Les bornes du
@@ -305,8 +385,8 @@ func parseResponse(body []byte, orgID string, cycleStart, cycleEnd time.Time) (S
 	s := Status{
 		ACUConsumed: resp.TotalACUs,
 		OrgID:       orgID,
-		CycleStart:  cycleStart,
-		CycleEnd:    cycleEnd,
+		CycleStart:  &cycleStart,
+		CycleEnd:    &cycleEnd,
 		FetchedAt:   time.Now(),
 	}
 
@@ -333,7 +413,7 @@ func parseResponse(body []byte, orgID string, cycleStart, cycleEnd time.Time) (S
 // la spec pour la consommation (minuit PST = 08:00:00 UTC), ce qui permet
 // d'aligner exactement l'affichage et le fenêtrage de la requête.
 func CycleBounds(now time.Time, resetDay int) (start, end time.Time) {
-	day := clampResetDay(resetDay)
+	day := resetDayOrDefault(resetDay)
 	year, month, _ := now.UTC().Date()
 
 	start = time.Date(year, month, day, cycleBoundaryHourUTC, 0, 0, 0, time.UTC)
@@ -368,20 +448,24 @@ func TokenFromEnv() string {
 
 // ResetDayFromEnv lit DEVIN_RESET_DAY : jour du mois du reset de budget Devin.
 // Défaut 5 (le plan Pro individuel reset le 5 du mois — valeur constatée dans
-// la UI, non exposée par l'API REST). Clampé à [1,28] pour éviter les mois
-// sans ce jour.
+// la UI, non exposée par l'API REST). Une valeur hors [1,28] retombe sur ce
+// défaut (voir resetDayOrDefault).
 func ResetDayFromEnv() int {
 	if v := strings.TrimSpace(os.Getenv("DEVIN_RESET_DAY")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
-			return clampResetDay(n)
+			return resetDayOrDefault(n)
 		}
 	}
 	return defaultResetDay
 }
 
-// clampResetDay ramène un jour de reset dans [1,28] : au-delà, tous les mois
-// n'ont pas ce jour et le cycle sauterait.
-func clampResetDay(day int) int {
+// resetDayOrDefault n'admet qu'un jour de reset dans [1,28] : au-delà, tous les
+// mois n'ont pas ce jour et le cycle sauterait. Une valeur hors bornes retombe
+// sur le défaut (5) et NON sur la borne la plus proche : ramener 30 à 28
+// donnerait une date de reset fausse tout en ayant l'air d'obéir, alors que le
+// défaut est une valeur connue, cohérente avec ce qu'affiche le dashboard quand
+// DEVIN_RESET_DAY n'est pas renseigné du tout.
+func resetDayOrDefault(day int) int {
 	if day < 1 || day > 28 {
 		return defaultResetDay
 	}
