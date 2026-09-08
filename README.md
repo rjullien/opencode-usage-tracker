@@ -171,20 +171,32 @@ puis reconstruire l'image, ou la variable côté déploiement. Aucune valeur n'e
 ici, et rien de tout cela n'est obligatoire pour démarrer.
 
 **Fenêtre interrogée.** La requête est explicitement bornée sur le cycle de facturation
-courant (`time_after`/`time_before` en secondes Unix) déduit de `DEVIN_RESET_DAY`, avec la
-frontière de journée documentée par la spec : minuit PST, soit **08:00:00 UTC** (décalage
-fixe, jamais PDT — la spec demande explicitement des timestamps alignés sur cet offset).
-Sans ces bornes l'API renvoie sa fenêtre par défaut, qui n'a aucune raison de coïncider
-avec le cycle affiché. `time_before` est plafonné à l'instant courant : la fin de cycle est
-dans le futur, la spec documente un `422` sur cet endpoint sans rien dire des bornes
-futures, et aucune consommation ne peut exister après maintenant. La ligne
+courant (`time_after`/`time_before` en secondes Unix) déduit de `DEVIN_RESET_DAY` : sans ces
+bornes l'API renvoie sa fenêtre par défaut, qui n'a aucune raison de coïncider avec le cycle
+affiché. `time_after` est posé sur la frontière de journée de la facturation, la seule chose
+que la spec documente pour cet endpoint : *« Billing cycles use midnight PST (Pacific
+Standard Time) as the day boundary, which corresponds to 08:00:00 UTC »* — minuit PST, soit
+**08:00:00 UTC**, décalage fixe, jamais PDT. (La consigne « pass Unix timestamps that align
+with this timezone offset » que l'on lit parfois citée ne concerne **pas** cet endpoint :
+elle n'apparaît que sur les variantes `/v3/enterprise/consumption/daily/...`, d'autres
+opérations de scope enterprise.) `time_before`, lui, est **volontairement non aligné** : il
+est plafonné à l'instant courant, parce que la fin du cycle est dans le futur et que la spec
+documente un `422` sur cet endpoint sans rien dire des bornes futures. La ligne
 « cycle du … au … » et la date de **reset budget** restent les bornes du cycle, que
 `/api/devin` expose (`cycleStart`, `cycleEnd`, absents quand le fetch a échoué).
 
-⚠️ Reste à recouper en production : la spec ne dit pas à quel instant de la journée les
-clés `date` de `consumption_by_date` sont posées. Si elles tombaient à minuit UTC et non à
-08:00 UTC, le total serait décalé d'une journée par rapport au libellé du cycle. À vérifier
-en comparant le total affiché à l'UI Devin au premier passage de cycle.
+⚠️ Reste à recouper en production, en comparant le total affiché à l'UI Devin au premier
+passage de cycle :
+- **Instant des clés `date`.** La spec ne dit pas à quel instant de la journée les clés
+  `date` de `consumption_by_date` sont posées. Si elles tombaient à minuit UTC et non à
+  08:00 UTC, le total serait décalé d'une journée par rapport au libellé du cycle.
+- **Jour en cours et plafonnement de `time_before`.** L'endpoint renvoie des seaux
+  journaliers, pas des évènements : si le serveur compare `time_before` à la clé `date` du
+  seau (posée à 08:00 UTC), le seau du jour en cours est compté ; s'il exige une journée
+  close, la consommation du jour **sort du total** jusqu'au lendemain. Borne alignée et
+  borne non future sont incompatibles tant que le cycle est en cours ; le choix fait ici est
+  de ne jamais envoyer de borne future, donc d'accepter ce sous-comptage éventuel du jour
+  courant.
 
 **Diagnostic.** Le token est trimmé avant usage (un secret monté depuis Kubernetes porte
 souvent un `\n` final, qui produisait un 401 interprété à tort comme un token expiré). Les
@@ -193,8 +205,10 @@ tronquée de la clé (`len=44 sha256=1a2b3c4d`), jamais la clé elle-même. Le d
 `/api/devin` étant servis sans authentification, le message qui y apparaît reste
 diagnostique mais sans empreinte : il nomme la variable à vérifier et renvoie aux logs.
 Les erreurs distinguent la clé de l'organisation : un `401` (ou un `403` sur `/v3/self`)
-accuse `DEVIN_API_KEY`, un `403` ou un `404` sur `/v3/organizations/{org}/…` accuse
-`DEVIN_ORG_ID` en citant l'org réellement interrogée.
+accuse `DEVIN_API_KEY` ; un `403` ou un `404` sur `/v3/organizations/{org}/…` cite l'org
+réellement interrogée et nomme sa provenance — `DEVIN_ORG_ID` quand la variable est
+renseignée, `/v3/self` sinon (dans ce dernier cas l'opérateur n'a jamais posé la variable :
+c'est le scope du token ou l'état de l'organisation qu'il déclare qu'il faut regarder).
 
 ⚠️ L'API publique n'expose **pas** la limite ACU du plan (`acu_limit`,
 `daily_quota_remaining_percent`) : elle ne vit que dans le gRPC interne du CLI.

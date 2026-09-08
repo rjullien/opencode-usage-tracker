@@ -128,8 +128,8 @@ type Status struct {
 
 	// CycleStart / CycleEnd : bornes du cycle de facturation interrogé.
 	// CycleStart est exactement le time_after envoyé ; CycleEnd est la fin du
-	// cycle, que la requête plafonne à maintenant (voir cappedEnd) puisqu'aucune
-	// consommation ne peut exister dans le futur.
+	// cycle, que la requête plafonne à maintenant pour ne pas envoyer de borne
+	// future (voir cappedEnd et son arbitrage).
 	//
 	// Pointeurs, et non des time.Time : sur un statut d'erreur aucune fenêtre
 	// n'a été interrogée, et /api/devin doit omettre ces champs plutôt que de
@@ -267,15 +267,25 @@ func (c *Client) resolveOrg(sr SelfResponse) (string, error) {
 // time_after/time_before, l'API renvoie sa fenêtre par défaut, qui ne
 // correspond pas au cycle affiché par le dashboard.
 //
-// Les bornes sont alignées sur 08:00:00 UTC, ce que la spec demande
-// explicitement pour cet endpoint (« pass Unix timestamps that align with this
-// timezone offset (e.g., 1733385600 for December 5, 2025 at midnight PST) »).
-// Elle ne documente en revanche NI l'inclusivité de time_after, NI l'instant
-// exact auquel les clés `date` de consumption_by_date sont posées : si ces clés
-// tombaient à minuit UTC plutôt qu'à 08:00 UTC, le total serait décalé d'une
-// journée par rapport au libellé « cycle du … au … ». Indécidable sans un appel
-// authentifié réel (aucun token dans l'environnement de développement) : le
-// total doit être recoupé avec l'UI Devin au premier passage de cycle.
+// Ce que la spec v3 documente pour l'endpoint réellement appelé
+// (/v3/organizations/{org_id}/consumption/daily) se limite à une phrase : « Get
+// daily ACU consumption for the organization. Timezone behavior: Billing cycles
+// use midnight PST (Pacific Standard Time) as the day boundary, which
+// corresponds to 08:00:00 UTC. » C'est de là, et de rien d'autre, que vient
+// l'alignement de time_after sur 08:00 UTC.
+//
+// La consigne « To match the consumption data shown in the Devin dashboard,
+// pass Unix timestamps that align with this timezone offset » ne figure PAS sur
+// cet endpoint : elle n'apparaît que sur les variantes
+// /v3/enterprise/consumption/daily[/...], qui sont d'autres opérations (scope
+// enterprise). Aucune décision de ce fichier ne s'appuie donc sur elle.
+//
+// La spec ne documente ni l'inclusivité de time_after, ni l'instant exact auquel
+// les clés `date` de consumption_by_date sont posées : si ces clés tombaient à
+// minuit UTC plutôt qu'à 08:00 UTC, le total serait décalé d'une journée par
+// rapport au libellé « cycle du … au … ». Indécidable sans un appel authentifié
+// réel (aucun token dans l'environnement de développement) : le total doit être
+// recoupé avec l'UI Devin au premier passage de cycle.
 func consumptionURL(orgID string, start, end time.Time) string {
 	q := url.Values{}
 	q.Set("time_after", strconv.FormatInt(start.Unix(), 10))
@@ -285,9 +295,18 @@ func consumptionURL(orgID string, start, end time.Time) string {
 
 // cappedEnd plafonne la borne haute de la requête à maintenant. La fin du cycle
 // courant est par construction dans le futur, la spec documente un 422 sur cet
-// endpoint et ne dit rien des bornes futures : comme aucune consommation ne peut
-// exister après maintenant, plafonner ne change pas le total renvoyé et supprime
-// le risque qu'une borne future fasse échouer toute la section.
+// endpoint et ne dit rien des bornes futures : plafonner supprime le risque
+// qu'une borne future fasse échouer toute la section.
+//
+// Arbitrage assumé, et son coût : la borne envoyée n'est alors plus alignée sur
+// la frontière de journée 08:00 UTC, seule propriété que la spec documente ici.
+// L'endpoint renvoie des seaux JOURNALIERS, pas des évènements : si le serveur
+// compare time_before à la clé `date` du seau (posée à 08:00 UTC), le seau du
+// jour en cours reste dans le total ; s'il exige une journée close, ce seau en
+// sort jusqu'au lendemain. Les deux propriétés (borne alignée, borne non future)
+// sont incompatibles tant que le cycle est en cours ; le risque retenu est le
+// sous-comptage éventuel du jour courant, à recouper avec l'UI Devin au premier
+// passage en production (voir README, « Reste à recouper en production »).
 func cappedEnd(end, now time.Time) time.Time {
 	if now.Before(end) {
 		return now
@@ -340,10 +359,7 @@ func (c *Client) getJSON(path string) ([]byte, error) {
 		// DEVIN_API_KEY enverrait l'opérateur vérifier la mauvaise variable.
 		if org := orgFromPath(path); org != "" {
 			log.Printf("Devin: organisation %s inaccessible (HTTP %d) — DEVIN_API_KEY %s", org, code, Fingerprint(c.token))
-			return nil, fmt.Errorf(
-				"organisation Devin %s inaccessible (HTTP %d) : elle n'existe pas ou ce token n'y a pas accès — "+
-					"vérifier DEVIN_ORG_ID, ou utiliser un token rattaché à cette organisation",
-				org, code)
+			return nil, c.orgInaccessibleErr(org, code)
 		}
 		if code == http.StatusNotFound {
 			return nil, fmt.Errorf("HTTP %d: %s", code, truncate(string(body), 200))
@@ -356,6 +372,30 @@ func (c *Client) getJSON(path string) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("HTTP %d: %s", code, truncate(string(body), 200))
 	}
+}
+
+// orgInaccessibleErr construit le diagnostic d'un 403/404 sur le chemin de
+// l'organisation, et distingue les deux provenances possibles de cette org :
+//
+//   - c.orgID renseigné : l'org vient de DEVIN_ORG_ID, c'est cette variable
+//     qu'il faut relire en premier (faute de frappe, org d'un autre compte).
+//   - c.orgID vide : l'org a été lue dans /v3/self, donc l'opérateur n'a jamais
+//     posé DEVIN_ORG_ID — l'envoyer « vérifier DEVIN_ORG_ID » le renverrait sur
+//     une variable absente alors que la cause est le scope du token ou l'état de
+//     l'organisation qu'il déclare.
+func (c *Client) orgInaccessibleErr(org string, code int) error {
+	if c.orgID != "" {
+		return fmt.Errorf(
+			"organisation Devin %s inaccessible (HTTP %d) : elle n'existe pas ou ce token n'y a pas accès — "+
+				"vérifier DEVIN_ORG_ID, ou utiliser un token rattaché à cette organisation",
+			org, code)
+	}
+	return fmt.Errorf(
+		"organisation Devin %s inaccessible (HTTP %d) : cette org vient de /v3/self, DEVIN_ORG_ID n'est pas renseigné — "+
+			"ce token n'a pas accès à l'organisation qu'il déclare, ou celle-ci n'existe plus ; "+
+			"utiliser un token rattaché à une organisation active, ou forcer l'organisation à interroger "+
+			"avec DEVIN_ORG_ID=org-...",
+		org, code)
 }
 
 // tokenRefuseErr construit le diagnostic d'un rejet de la clé elle-même.

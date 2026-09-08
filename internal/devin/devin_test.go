@@ -380,28 +380,64 @@ func TestFetchStatus401MessageDiagnostique(t *testing.T) {
 
 func TestFetchStatusErreursOrgAccusentLOrgPasLaCle(t *testing.T) {
 	// /v3/self répond 200 (le token est bon), c'est l'organisation qui est
-	// refusée (403) ou inconnue (404) : le diagnostic doit nommer DEVIN_ORG_ID.
-	for _, code := range []int{403, 404} {
-		t.Run(fmt.Sprintf("HTTP %d", code), func(t *testing.T) {
-			srv := testServerStatuts(t, selfBodySansOrg, 200, `{"detail":"nope"}`, code)
-			cfg := testConfig(srv.URL)
-			cfg.OrgID = "org-mal-saisi"
-			c := NewClient(cfg)
+	// refusée (403) ou inconnue (404) : le diagnostic doit nommer l'org et jamais
+	// la clé. Il doit en outre dire d'où vient cette org : envoyer l'opérateur
+	// « vérifier DEVIN_ORG_ID » alors qu'il n'a jamais posé cette variable (org
+	// lue dans /v3/self, cas nominal d'un service user) est un faux indice.
+	sources := []struct {
+		nom      string
+		selfBody string
+		orgID    string // DEVIN_ORG_ID
+		wantOrg  string
+		wantDans []string
+		wantHors []string
+	}{
+		{
+			nom:      "org de DEVIN_ORG_ID",
+			selfBody: selfBodySansOrg,
+			orgID:    "org-mal-saisi",
+			wantOrg:  "org-mal-saisi",
+			wantDans: []string{"vérifier DEVIN_ORG_ID"},
+			wantHors: []string{"/v3/self"},
+		},
+		{
+			nom:      "org lue dans /v3/self, DEVIN_ORG_ID vide",
+			selfBody: selfBody,
+			orgID:    "",
+			wantOrg:  "org-93932dfb42b443c78ba280183a3d697d",
+			wantDans: []string{"/v3/self", "DEVIN_ORG_ID n'est pas renseigné"},
+			wantHors: []string{"vérifier DEVIN_ORG_ID"},
+		},
+	}
+	for _, src := range sources {
+		for _, code := range []int{403, 404} {
+			t.Run(fmt.Sprintf("%s/HTTP %d", src.nom, code), func(t *testing.T) {
+				srv := testServerStatuts(t, src.selfBody, 200, `{"detail":"nope"}`, code)
+				cfg := testConfig(srv.URL)
+				cfg.OrgID = src.orgID
+				c := NewClient(cfg)
 
-			_, err := c.FetchStatus()
-			if err == nil {
-				t.Fatalf("expected error on HTTP %d", code)
-			}
-			msg := err.Error()
-			for _, want := range []string{"org-mal-saisi", "DEVIN_ORG_ID", fmt.Sprintf("HTTP %d", code)} {
-				if !strings.Contains(msg, want) {
-					t.Errorf("message sans %q : %s", want, msg)
+				_, err := c.FetchStatus()
+				if err == nil {
+					t.Fatalf("expected error on HTTP %d", code)
 				}
-			}
-			if strings.Contains(msg, "DEVIN_API_KEY") {
-				t.Errorf("le message accuse la clé alors que l'org est en cause : %s", msg)
-			}
-		})
+				msg := err.Error()
+				wants := append([]string{src.wantOrg, fmt.Sprintf("HTTP %d", code)}, src.wantDans...)
+				for _, want := range wants {
+					if !strings.Contains(msg, want) {
+						t.Errorf("message sans %q : %s", want, msg)
+					}
+				}
+				for _, hors := range src.wantHors {
+					if strings.Contains(msg, hors) {
+						t.Errorf("message contenant %q alors que l'org vient d'ailleurs : %s", hors, msg)
+					}
+				}
+				if strings.Contains(msg, "DEVIN_API_KEY") {
+					t.Errorf("le message accuse la clé alors que l'org est en cause : %s", msg)
+				}
+			})
+		}
 	}
 }
 
