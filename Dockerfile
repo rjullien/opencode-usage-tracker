@@ -28,6 +28,13 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 # Binary
 COPY --from=builder /dashboard /dashboard
 
+# Organisation Devin par défaut. `org_id` est nullable pour un PAT : quand
+# /v3/self n'en renvoie pas, la section ACU Devin a besoin qu'on la lui donne.
+# Le renseigner ici et reconstruire l'image évite de toucher aux manifests de
+# déploiement. Laissé commenté : aucune valeur inventée, et rien d'obligatoire
+# pour démarrer (sans org résoluble, seule la section Devin s'affiche en erreur).
+# ENV DEVIN_ORG_ID=org-xxxxxxxx
+
 EXPOSE 8080
 
 ENTRYPOINT ["/dashboard"]

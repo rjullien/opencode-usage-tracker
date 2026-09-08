@@ -131,7 +131,8 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 | `OPENCODE_GO_API_KEY` | — | Clé Go, affichée « Main » (au moins une clé requise) |
 | `OPENCODE_GO_API_KEY_<SUFFIXE>` | — | Clé supplémentaire, affichée « SUFFIXE » |
 | `DEVIN_API_KEY` | — | Token Devin (optionnel) — active la **section ACU Devin**, totalement séparée du lot OpenCode |
-| `DEVIN_RESET_DAY` | `5` | Jour du mois du reset de budget Devin (plan Pro individuel, non exposé par l'API) |
+| `DEVIN_ORG_ID` | — | Organisation Devin (`org-...`) à interroger, optionnelle : indispensable quand le token est un PAT dont `/v3/self` ne renvoie pas d'`org_id` |
+| `DEVIN_RESET_DAY` | `5` | Jour du mois du reset de budget Devin (plan Pro individuel, non exposé par l'API). Seules les valeurs `1`–`28` sont retenues : au-delà, tous les mois n'ont pas ce jour, et la variable retombe sur le défaut `5` |
 
 Toute variable commençant par `OPENCODE_GO_API_KEY` est découverte automatiquement, et le label
 d'affichage est déduit du suffixe : `OPENCODE_GO_API_KEY_R` s'affiche « R »,
@@ -142,19 +143,78 @@ aucune modification de code. L'ordre d'affichage suit le nom de la variable, pou
 
 Sans `DEVIN_API_KEY`, rien ne change : la section Devin est absente du dashboard et
 `/api/devin` répond 404. Avec un token `cog_` (PAT ou service user), une carte
-« Devin — ACU » apparaît **en dessous** de la grille OpenCode : total ACU consommés,
-jours de consommation, répartition par produit (devin/cascade/terminal), org.
-Les 4 clés OpenCode partagées ne sont jamais mélangées à Devin.
+« Devin — ACU » apparaît **en dessous** de la grille OpenCode : cycle de facturation
+couvert, total ACU consommés, jours relevés, répartition par produit
+(devin/cascade/terminal), org. Les 4 clés OpenCode partagées ne sont jamais
+mélangées à Devin, et un échec Devin n'empêche jamais le rendu de la grille OpenCode.
 
-**API utilisée (validée 31/08/2026 avec un PAT `cog_`) :**
-- `GET /v3/self` → identité + `org_id`
-- `GET /v3/organizations/{org_id}/consumption/daily` → `{total_acus, consumption_by_date[{date, acus, acus_by_product}]}`
+**API publique utilisée (conforme à la spec v3, https://docs.devin.ai/v3-openapi.yaml) :**
+- `GET /v3/self` → identité du principal (`principal_type`, `user_id`, `api_key_id`…) et
+  `org_id` **quand il y en a un**
+- `GET /v3/organizations/{org_id}/consumption/daily?time_after=…&time_before=…` →
+  `{total_acus, consumption_by_date[{date, acus, acus_by_product}]}`
+
+**Résolution de l'organisation.** `org_id` est `nullable` et absent des champs requis de
+`PatUserSelf` comme de `ServiceUserSelf` : un PAT parfaitement valide peut ne porter
+aucune organisation, et aucun endpoint public ne permet de lister les organisations d'un
+PAT (seul `/v3/enterprise/organizations` existe, hors de portée d'un plan Pro). L'ordre de
+résolution est donc `DEVIN_ORG_ID` **puis** l'`org_id` de `/v3/self`. Si les deux sont
+vides, la section Devin s'affiche en erreur avec un message qui nomme `DEVIN_ORG_ID` et le
+`principal_type` reçu. L'identifiant `org-...` se lit dans l'URL de l'app Devin
+(ou dans la réponse d'un token de service user d'organisation).
+
+**À faire au déploiement.** Le code rend le cas diagnosticable, il ne le devine pas : si le
+log de boot affiche `DEVIN_ORG_ID absent (org lue dans /v3/self)` **et** que la section
+reste en erreur, c'est que le token ne porte pas d'organisation. Il faut alors fournir
+l'org — `ENV DEVIN_ORG_ID=org-...` dans le `Dockerfile` (ligne commentée prête à l'emploi)
+puis reconstruire l'image, ou la variable côté déploiement. Aucune valeur n'est inventée
+ici, et rien de tout cela n'est obligatoire pour démarrer.
+
+**Fenêtre interrogée.** La requête est explicitement bornée sur le cycle de facturation
+courant (`time_after`/`time_before` en secondes Unix) déduit de `DEVIN_RESET_DAY` : sans ces
+bornes l'API renvoie sa fenêtre par défaut, qui n'a aucune raison de coïncider avec le cycle
+affiché. `time_after` est posé sur la frontière de journée de la facturation, la seule chose
+que la spec documente pour cet endpoint : *« Billing cycles use midnight PST (Pacific
+Standard Time) as the day boundary, which corresponds to 08:00:00 UTC »* — minuit PST, soit
+**08:00:00 UTC**, décalage fixe, jamais PDT. (La consigne « pass Unix timestamps that align
+with this timezone offset » que l'on lit parfois citée ne concerne **pas** cet endpoint :
+elle n'apparaît que sur les variantes `/v3/enterprise/consumption/daily/...`, d'autres
+opérations de scope enterprise.) `time_before`, lui, est **volontairement non aligné** : il
+est plafonné à l'instant courant, parce que la fin du cycle est dans le futur et que la spec
+documente un `422` sur cet endpoint sans rien dire des bornes futures. La ligne
+« cycle du … au … » et la date de **reset budget** restent les bornes du cycle, que
+`/api/devin` expose (`cycleStart`, `cycleEnd`, absents quand le fetch a échoué).
+
+⚠️ Reste à recouper en production, en comparant le total affiché à l'UI Devin au premier
+passage de cycle :
+- **Instant des clés `date`.** La spec ne dit pas à quel instant de la journée les clés
+  `date` de `consumption_by_date` sont posées. Si elles tombaient à minuit UTC et non à
+  08:00 UTC, le total serait décalé d'une journée par rapport au libellé du cycle.
+- **Jour en cours et plafonnement de `time_before`.** L'endpoint renvoie des seaux
+  journaliers, pas des évènements : si le serveur compare `time_before` à la clé `date` du
+  seau (posée à 08:00 UTC), le seau du jour en cours est compté ; s'il exige une journée
+  close, la consommation du jour **sort du total** jusqu'au lendemain. Borne alignée et
+  borne non future sont incompatibles tant que le cycle est en cours ; le choix fait ici est
+  de ne jamais envoyer de borne future, donc d'accepter ce sous-comptage éventuel du jour
+  courant.
+
+**Diagnostic.** Le token est trimmé avant usage (un secret monté depuis Kubernetes porte
+souvent un `\n` final, qui produisait un 401 interprété à tort comme un token expiré). Les
+**logs du pod** (boot et rejets 401/403) portent la longueur et une empreinte SHA-256
+tronquée de la clé (`len=44 sha256=1a2b3c4d`), jamais la clé elle-même. Le dashboard et
+`/api/devin` étant servis sans authentification, le message qui y apparaît reste
+diagnostique mais sans empreinte : il nomme la variable à vérifier et renvoie aux logs.
+Les erreurs distinguent la clé de l'organisation : un `401` (ou un `403` sur `/v3/self`)
+accuse `DEVIN_API_KEY` ; un `403` ou un `404` sur `/v3/organizations/{org}/…` cite l'org
+réellement interrogée et nomme sa provenance — `DEVIN_ORG_ID` quand la variable est
+renseignée, `/v3/self` sinon (dans ce dernier cas l'opérateur n'a jamais posé la variable :
+c'est le scope du token ou l'état de l'organisation qu'il déclare qu'il faut regarder).
 
 ⚠️ L'API publique n'expose **pas** la limite ACU du plan (`acu_limit`,
 `daily_quota_remaining_percent`) : elle ne vit que dans le gRPC interne du CLI.
-Le board affiche la **consommation réelle**, pas un pourcentage. La date de
-**reset budget** est fixée au **5 du mois** (`DEVIN_RESET_DAY`, défaut 5) —
-valeur du plan Pro individuel, l'API REST ne la renvoie pas.
+Le board affiche la **consommation réelle**, pas un pourcentage. Les vraies bornes de
+cycle ne sont exposées que par `/v3/enterprise/consumption/cycles` (scope enterprise), d'où
+le calcul local à partir de `DEVIN_RESET_DAY` (défaut 5, valeur du plan Pro individuel).
 
 ## Développement local
 

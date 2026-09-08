@@ -437,25 +437,38 @@ type stubDevin struct{ s *devin.Status }
 
 func (st stubDevin) Statuses() *devin.Status { return st.s }
 
-func devinStatusOK() *devin.Status {
+// devinStatusPourCycle décrit une réponse POSSIBLE : les jours relevés tombent
+// dans le cycle porté par le Status et sont alignés sur la frontière de journée
+// 08:00 UTC (minuit PST), comme les bornes du cycle. Une fixture dont les jours
+// sortent de la fenêtre affichée resterait verte, mais cesserait de décrire ce
+// que l'API peut réellement renvoyer.
+func devinStatusPourCycle(cycleStart, cycleEnd time.Time) *devin.Status {
 	return &devin.Status{
 		ACUConsumed: 42.5,
 		DayCount:    2,
 		OrgID:       "org-93932dfb42b443c78ba280183a3d697d",
 		Days: []devin.DayUsage{
 			{
-				Date:          mustTime("2026-08-31T00:00:00Z"),
+				Date:          cycleStart.AddDate(0, 0, 2),
 				ACUs:          12.5,
 				ACUsByProduct: devin.ACUsByProduct{Devin: 12.5, Cascade: 0, Terminal: 0},
 			},
 			{
-				Date:          mustTime("2026-08-30T00:00:00Z"),
+				Date:          cycleStart.AddDate(0, 0, 1),
 				ACUs:          30,
 				ACUsByProduct: devin.ACUsByProduct{Devin: 20, Cascade: 5, Terminal: 5},
 			},
 		},
-		FetchedAt: captureNow,
+		CycleStart: &cycleStart,
+		CycleEnd:   &cycleEnd,
+		FetchedAt:  captureNow,
 	}
+}
+
+// devinStatusOK est le statut nominal des tests de rendu : le cycle 05/08 → 05/09
+// 2026, celui qui contient captureNow.
+func devinStatusOK() *devin.Status {
+	return devinStatusPourCycle(mustTime("2026-08-05T08:00:00Z"), mustTime("2026-09-05T08:00:00Z"))
 }
 
 func TestDashboardWithDevinSection(t *testing.T) {
@@ -484,12 +497,22 @@ func TestDashboardDevinAbsentWithoutSource(t *testing.T) {
 }
 
 func TestDashboardDevinErrorRendered(t *testing.T) {
+	// Message tel que le produit internal/devin : diagnostique (il nomme la
+	// variable à vérifier) mais sans empreinte de clé — la page est servie sans
+	// authentification, l'empreinte reste dans les logs du pod.
+	const msg = "token Devin refusé (HTTP 401) : clé absente, expirée ou hors scope — " +
+		"vérifier DEVIN_API_KEY (longueur et empreinte SHA-256 de la clé envoyée dans les logs du pod)"
 	h := New(emptyPoller{}, nil, stubDevin{
-		s: &devin.Status{Error: "token Devin invalide ou expiré (HTTP 401)", FetchedAt: captureNow},
+		s: &devin.Status{Error: msg, FetchedAt: captureNow},
 	})
 	body := renderDashboard(t, h)
 
-	mustContain(t, body, "injoignable", "token Devin invalide ou expiré")
+	mustContain(t, body, "injoignable", "token Devin refusé (HTTP 401)", "vérifier DEVIN_API_KEY")
+	for _, leak := range []string{"sha256=", "len="} {
+		if strings.Contains(body, leak) {
+			t.Errorf("la page expose %q, réservé aux logs du pod", leak)
+		}
+	}
 }
 
 func TestAPIDevin(t *testing.T) {
@@ -509,6 +532,65 @@ func TestAPIDevin(t *testing.T) {
 	}
 }
 
+// Les bornes du cycle interrogé font partie du contrat de /api/devin : sans
+// elles, un consommateur ne peut pas savoir de quelle période parle le total.
+func TestAPIDevinExposeLesBornesDuCycle(t *testing.T) {
+	h := New(emptyPoller{}, nil, stubDevin{s: devinStatusOK()})
+	rec := httptest.NewRecorder()
+	h.APIDevin(rec, httptest.NewRequest(http.MethodGet, "/api/devin", nil))
+
+	var got devin.Status
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.CycleStart == nil || got.CycleEnd == nil {
+		t.Fatalf("bornes absentes du JSON : %s", rec.Body.String())
+	}
+	if want := mustTime("2026-08-05T08:00:00Z"); !got.CycleStart.Equal(want) {
+		t.Errorf("cycleStart = %s, want %s", got.CycleStart, want)
+	}
+	if want := mustTime("2026-09-05T08:00:00Z"); !got.CycleEnd.Equal(want) {
+		t.Errorf("cycleEnd = %s, want %s", got.CycleEnd, want)
+	}
+}
+
+// Sur un statut d'erreur aucune fenêtre n'a été interrogée : les champs doivent
+// être absents du JSON, pas publiés à « 0001-01-01T00:00:00Z ».
+func TestAPIDevinOmetLesBornesSurStatutEnErreur(t *testing.T) {
+	h := New(emptyPoller{}, nil, stubDevin{
+		s: &devin.Status{Error: "organisation Devin org-x inaccessible (HTTP 404)", FetchedAt: captureNow},
+	})
+	rec := httptest.NewRecorder()
+	h.APIDevin(rec, httptest.NewRequest(http.MethodGet, "/api/devin", nil))
+
+	body := rec.Body.String()
+	for _, unwanted := range []string{"cycleStart", "cycleEnd", "0001-01-01"} {
+		if strings.Contains(body, unwanted) {
+			t.Errorf("le JSON d'erreur contient %q : %s", unwanted, body)
+		}
+	}
+}
+
+// Un Status sans bornes (statut d'erreur, source de test) doit retomber sur le
+// cycle calculé localement : la page affiche toujours une période cohérente.
+func TestBuildDevinViewRepliSurLeCycleLocal(t *testing.T) {
+	if v := buildDevinView(nil, captureNow); v != nil {
+		t.Fatalf("buildDevinView(nil) = %+v, want nil (section absente)", v)
+	}
+
+	v := buildDevinView(&devin.Status{Error: "boom", FetchedAt: captureNow}, captureNow)
+	if v == nil {
+		t.Fatal("buildDevinView a renvoyé nil pour un statut en erreur")
+	}
+	// captureNow = 25/08/2026, DEVIN_RESET_DAY non renseigné → défaut 5.
+	if want := mustTime("2026-08-05T08:00:00Z"); !v.CycleStart.Equal(want) {
+		t.Errorf("CycleStart = %s, want %s (repli sur CycleBounds)", v.CycleStart, want)
+	}
+	if want := mustTime("2026-09-05T08:00:00Z"); !v.ResetAt.Equal(want) {
+		t.Errorf("ResetAt = %s, want %s (repli sur CycleBounds)", v.ResetAt, want)
+	}
+}
+
 func TestAPIDevinNotFoundWithoutSource(t *testing.T) {
 	h := newTestHandler(t)
 	rec := httptest.NewRecorder()
@@ -519,20 +601,45 @@ func TestAPIDevinNotFoundWithoutSource(t *testing.T) {
 	}
 }
 
+func TestDashboardDevinAfficheLaFenetreDuCycle(t *testing.T) {
+	// Le Status porte les bornes réellement interrogées : la page doit afficher
+	// celles-là, pas un recalcul qui pourrait en diverger.
+	s := devinStatusPourCycle(mustTime("2026-09-05T08:00:00Z"), mustTime("2026-10-05T08:00:00Z"))
+
+	h := New(emptyPoller{}, nil, stubDevin{s: s})
+	h.now = func() time.Time { return mustTime("2026-09-20T12:00:00Z") }
+	body := renderDashboard(t, h)
+
+	mustContain(t, body,
+		"cycle du 05/09 au 05/10",
+		"2 jour(s) relevé(s)",
+		"reset budget",
+		"05/10 à 10:00", // fin de cycle 08:00 UTC = 10:00 à Paris
+	)
+}
+
 func TestNextResetDay(t *testing.T) {
+	// La frontière de journée est 08:00 UTC (minuit PST), comme la facturation
+	// Devin : c'est la même borne que celle envoyée en time_before à l'API.
 	// Le 3 du mois → reset le 5 du même mois.
 	early := mustTime("2026-09-03T10:00:00Z")
-	if got := nextResetDay(early); got.Day() != 5 || got.Month() != time.September {
-		t.Errorf("nextResetDay(03/09) = %v, want 05/09", got)
+	if got := nextResetDay(early); got.Day() != 5 || got.Month() != time.September || got.UTC().Hour() != 8 {
+		t.Errorf("nextResetDay(03/09) = %v, want 05/09 08:00 UTC", got)
 	}
 	// Le 7 du mois → reset le 5 du mois suivant.
 	late := mustTime("2026-09-07T10:00:00Z")
 	if got := nextResetDay(late); got.Day() != 5 || got.Month() != time.October {
 		t.Errorf("nextResetDay(07/09) = %v, want 05/10", got)
 	}
-	// Le 5 exactement : déjà passé 00:00 → mois suivant.
-	onDay := mustTime("2026-09-05T00:00:00Z")
-	if got := nextResetDay(onDay); got.Month() != time.October {
-		t.Errorf("nextResetDay(05/09 00:00) = %v, want 05/10", got)
+	// Le jour du reset à 07:00 UTC : la frontière 08:00 n'est pas franchie, le
+	// reset est encore devant nous le même jour.
+	before := mustTime("2026-09-05T07:00:00Z")
+	if got := nextResetDay(before); got.Day() != 5 || got.Month() != time.September {
+		t.Errorf("nextResetDay(05/09 07:00) = %v, want 05/09 08:00 UTC", got)
+	}
+	// Le jour du reset à 09:00 UTC : franchie, le prochain reset est en octobre.
+	after := mustTime("2026-09-05T09:00:00Z")
+	if got := nextResetDay(after); got.Day() != 5 || got.Month() != time.October {
+		t.Errorf("nextResetDay(05/09 09:00) = %v, want 05/10", got)
 	}
 }

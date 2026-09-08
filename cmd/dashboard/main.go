@@ -50,11 +50,21 @@ func main() {
 	// Devin ACU : OPTIONNEL et totalement à part des 4 clés OpenCode partagées.
 	// Sans DEVIN_API_KEY, la section Devin est absente du dashboard et de l'API.
 	var devSrc handler.DevinSource
-	if devToken := devin.TokenFromEnv(); devToken != "" {
-		devClient := devin.NewClient(15*time.Second, devToken)
-		devFetcher := devin.NewFetcher(devClient, devToken, cacheTTL)
-		devSrc = devFetcher
-		log.Printf("Devin ACU source: configurée (DEVIN_API_KEY présente)")
+	devCfg := devin.ConfigFromEnv(15 * time.Second)
+	if devCfg.Token != "" {
+		devSrc = devin.NewFetcher(devin.NewClient(devCfg), devCfg.Token, cacheTTL)
+
+		// Le log de boot doit permettre de diagnostiquer un 401 ou un org
+		// manquant sans accès au cluster : empreinte de la clé (jamais la clé),
+		// présence de DEVIN_ORG_ID et bornes du cycle réellement interrogé.
+		orgSource := "DEVIN_ORG_ID absent (org lue dans /v3/self)"
+		if devCfg.OrgID != "" {
+			orgSource = "DEVIN_ORG_ID=" + devCfg.OrgID
+		}
+		start, end := devin.CycleBounds(time.Now(), devCfg.ResetDay)
+		log.Printf("Devin ACU source: configurée (DEVIN_API_KEY %s, %s, reset le %d du mois, cycle courant %s → %s)",
+			devin.Fingerprint(devCfg.Token), orgSource, devCfg.ResetDay,
+			start.Format("2006-01-02 15:04 MST"), end.Format("2006-01-02 15:04 MST"))
 	} else {
 		log.Printf("Devin ACU source: absente (pas de DEVIN_API_KEY)")
 	}

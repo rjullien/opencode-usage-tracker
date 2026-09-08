@@ -162,11 +162,14 @@ type DashboardData struct {
 //
 // Pas de pourcentage ni de feu : l'API publique Devin n'expose pas la limite
 // ACU (le gRPC interne du CLI seulement). On affiche la consommation réelle.
-// ResetAt est le prochain reset de budget : fixé au N du mois (le plan Devin
-// ne l'expose pas via l'API REST) — voir devin.ResetDayFromEnv.
+// CycleStart et ResetAt bornent le cycle de facturation : ce sont les mêmes
+// bornes que celles envoyées en time_after/time_before à l'API, pour que le
+// total affiché et la période affichée parlent bien de la même chose.
 type DevinView struct {
 	Status devin.Status
-	// ResetAt : prochain jour de reset (5 du mois par défaut).
+	// CycleStart : début du cycle de facturation courant.
+	CycleStart time.Time
+	// ResetAt : fin du cycle courant, donc prochain reset de budget.
 	ResetAt time.Time
 }
 
@@ -174,19 +177,28 @@ func buildDevinView(s *devin.Status, now time.Time) *DevinView {
 	if s == nil {
 		return nil
 	}
-	return &DevinView{Status: *s, ResetAt: nextResetDay(now)}
+	start, _ := devin.CycleBounds(now, devin.ResetDayFromEnv())
+	v := &DevinView{Status: *s, CycleStart: start, ResetAt: nextResetDay(now)}
+
+	// Les bornes portées par le Status sont celles réellement interrogées :
+	// elles priment sur le recalcul local, qui ne sert que de repli quand le
+	// Status n'en porte pas (statut en erreur, source de test).
+	if s.CycleStart != nil {
+		v.CycleStart = *s.CycleStart
+	}
+	if s.CycleEnd != nil {
+		v.ResetAt = *s.CycleEnd
+	}
+	return v
 }
 
-// nextResetDay calcule la prochaine occurrence du jour N du mois (défaut 5).
-// Si on est déjà passé le jour N ce mois-ci, on prend le mois suivant.
+// nextResetDay renvoie la fin du cycle de facturation Devin courant, c'est-à-dire
+// le prochain reset de budget. Délégué à devin.CycleBounds pour que la date
+// affichée soit exactement celle qui borne la requête API — frontière de journée
+// à 08:00 UTC (minuit PST), comme la facturation Devin.
 func nextResetDay(now time.Time) time.Time {
-	day := devin.ResetDayFromEnv()
-	year, month, _ := now.Date()
-	candidate := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
-	if !candidate.After(now) {
-		candidate = time.Date(year, month+1, day, 0, 0, 0, 0, time.UTC)
-	}
-	return candidate
+	_, end := devin.CycleBounds(now, devin.ResetDayFromEnv())
+	return end
 }
 
 func buildDashboardData(statuses []opencode.AgentStatus, weights map[string]float64, devSrc DevinSource, now time.Time) DashboardData {
@@ -350,8 +362,8 @@ func (h *Handler) APIUsage(w http.ResponseWriter, r *http.Request) {
 	enc.Encode(data.Agents)
 }
 
-// APIDevin returns the Devin ACU status (assumption API — à valider avec un
-// vrai token). 404 quand aucun token n'est configuré, 200 avec le JSON sinon.
+// APIDevin renvoie le statut ACU Devin, bornes du cycle interrogé incluses.
+// 404 quand aucun token n'est configuré, 200 avec le JSON sinon.
 func (h *Handler) APIDevin(w http.ResponseWriter, r *http.Request) {
 	if h.devin == nil {
 		http.NotFound(w, r)
