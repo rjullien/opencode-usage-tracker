@@ -322,23 +322,46 @@
   {{end}}
   </div>
 
-  {{/* ---------------- Devin ACU (section séparée, hors lot OpenCode) ---------------- */}}
+  {{/* ---------------- Devin (quotas + ACU, hors lot OpenCode) ---------------- */}}
   {{if .Devin}}
     {{$d := .Devin}}
     <div class="devin-section">
       <div class="agent-card{{if $d.Status.Error}} error{{end}}">
         <div class="agent-header">
-          <h3>Devin — ACU <span class="badge-plain">hors lot OpenCode</span></h3>
+          <h3>Devin{{if $d.Status.Quota}}{{with $d.Status.Quota.PlanName}} — {{.}}{{end}}{{else}} — ACU{{end}} <span class="badge-plain">hors lot OpenCode</span></h3>
           {{if $d.Status.Error}}
             <span class="badge red"><span class="dot-sm red"></span>injoignable</span>
           {{else}}
-            <span class="badge green"><span class="dot-sm green"></span>consommation</span>
+            <span class="badge green"><span class="dot-sm green"></span>ok</span>
           {{end}}
         </div>
 
         {{if $d.Status.Error}}
           <div class="error-msg">{{$d.Status.Error}}</div>
         {{else}}
+          {{range $d.Quotas}}
+            <div class="window">
+              <div class="window-header">
+                <span class="window-label">{{.Name}}</span>
+                <span class="window-pct {{.Level}}">{{.Percent}}%</span>
+              </div>
+              <div class="bar-track">
+                <div class="bar-fill {{.Level}}" style="width: {{clamp .Percent}}%"></div>
+              </div>
+              <div class="lines">
+                {{if not .ResetsAt.IsZero}}
+                  <div class="line muted">
+                    <span class="num">reset {{fmtDate .ResetsAt}}</span>
+                    <span class="num">dans {{fmtDur .ResetIn}}</span>
+                  </div>
+                {{end}}
+              </div>
+            </div>
+          {{end}}
+          {{if $d.Status.QuotaError}}
+            <div class="error-msg">quotas : {{$d.Status.QuotaError}}</div>
+          {{end}}
+
           <div class="window lead">
             <div class="window-header">
               <span class="window-label">ACU consommés</span>
@@ -363,7 +386,7 @@
                 <span class="num">org {{$d.Status.OrgID}}</span>
               </div>
               <div class="line muted">
-                <span class="num">reset budget</span>
+                <span class="num">reset budget ACU</span>
                 <span class="num">{{fmtDate $d.ResetAt}}</span>
               </div>
             </div>

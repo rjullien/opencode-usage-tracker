@@ -130,29 +130,40 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 | `BIFROST_URL` | `http://bifrost.openclaw.svc.cluster.local:8080` | Base URL du gateway Bifrost (lecture seule des poids de routage) |
 | `OPENCODE_GO_API_KEY` | — | Clé Go, affichée « Main » (au moins une clé requise) |
 | `OPENCODE_GO_API_KEY_<SUFFIXE>` | — | Clé supplémentaire, affichée « SUFFIXE » |
-| `DEVIN_API_KEY` | — | Token Devin (optionnel) — active la **section ACU Devin**, totalement séparée du lot OpenCode |
+| `DEVIN_API_KEY` | — | Token Devin (optionnel) — active la **section Devin**, totalement séparée du lot OpenCode |
 | `DEVIN_ORG_ID` | — | Organisation Devin (`org-...`) à interroger, optionnelle : indispensable quand le token est un PAT dont `/v3/self` ne renvoie pas d'`org_id` |
 | `DEVIN_RESET_DAY` | `5` | Jour du mois du reset de budget Devin (plan Pro individuel, non exposé par l'API). Seules les valeurs `1`–`28` sont retenues : au-delà, tous les mois n'ont pas ce jour, et la variable retombe sur le défaut `5` |
+| `DEVIN_API_SERVER` | `https://server.codeium.com` | Hôte Connect-RPC pour `GetUserStatus` (quotas jour/semaine) |
 
 Toute variable commençant par `OPENCODE_GO_API_KEY` est découverte automatiquement, et le label
 d'affichage est déduit du suffixe : `OPENCODE_GO_API_KEY_R` s'affiche « R »,
 `OPENCODE_GO_API_KEY_ALICE` s'affiche « Alice ». Ajouter ou retirer un abonnement ne demande
 aucune modification de code. L'ordre d'affichage suit le nom de la variable, pour rester stable.
 
-### Section Devin ACU (à part du lot OpenCode)
+### Section Devin (quotas + ACU, à part du lot OpenCode)
 
 Sans `DEVIN_API_KEY`, rien ne change : la section Devin est absente du dashboard et
 `/api/devin` répond 404. Avec un token `cog_` (PAT ou service user), une carte
-« Devin — ACU » apparaît **en dessous** de la grille OpenCode : cycle de facturation
-couvert, total ACU consommés, jours relevés, répartition par produit
-(devin/cascade/terminal), org. Les 4 clés OpenCode partagées ne sont jamais
-mélangées à Devin, et un échec Devin n'empêche jamais le rendu de la grille OpenCode.
+« Devin — Pro » apparaît **en dessous** de la grille OpenCode : **quotas Daily /
+Weekly** (pourcentages utilisés, resets), plus la consommation ACU du cycle
+(jours relevés, répartition par produit). Les 4 clés OpenCode partagées ne sont
+jamais mélangées à Devin, et un échec Devin n'empêche jamais le rendu de la grille
+OpenCode.
 
-**API publique utilisée (conforme à la spec v3, https://docs.devin.ai/v3-openapi.yaml) :**
-- `GET /v3/self` → identité du principal (`principal_type`, `user_id`, `api_key_id`…) et
-  `org_id` **quand il y en a un**
-- `GET /v3/organizations/{org_id}/consumption/daily?time_after=…&time_before=…` →
-  `{total_acus, consumption_by_date[{date, acus, acus_by_product}]}`
+**Deux APIs, deux rôles :**
+- REST `https://api.devin.ai` (spec v3) → identité + **consommation ACU**
+  - `GET /v3/self` → `org_id` quand il y en a un
+  - `GET /v3/organizations/{org_id}/consumption/daily?time_after=…&time_before=…`
+- Connect-RPC `https://server.codeium.com` (même chemin que le CLI / OpenUsage) →
+  **quotas jour/semaine**
+  - `POST /exa.seat_management_pb.SeatManagementService/GetUserStatus`
+  - body : `{"metadata":{"apiKey":"<DEVIN_API_KEY>","ideName":"devin",…}}`
+  - champs : `dailyQuotaRemainingPercent` (→ used = 100−remaining),
+    `weeklyQuotaRemainingPercent` (parfois **absent** sur le plan Pro),
+    `dailyQuotaResetAtUnix` / `weeklyQuotaResetAtUnix`, `planInfo.planName`
+
+Le même `DEVIN_API_KEY` (`cog_`) sert aux deux. Un échec GetUserStatus est soft :
+les ACU restent affichés, `quotaError` apparaît sur la carte.
 
 **Résolution de l'organisation.** `org_id` est `nullable` et absent des champs requis de
 `PatUserSelf` comme de `ServiceUserSelf` : un PAT parfaitement valide peut ne porter
@@ -210,11 +221,12 @@ réellement interrogée et nomme sa provenance — `DEVIN_ORG_ID` quand la varia
 renseignée, `/v3/self` sinon (dans ce dernier cas l'opérateur n'a jamais posé la variable :
 c'est le scope du token ou l'état de l'organisation qu'il déclare qu'il faut regarder).
 
-⚠️ L'API publique n'expose **pas** la limite ACU du plan (`acu_limit`,
-`daily_quota_remaining_percent`) : elle ne vit que dans le gRPC interne du CLI.
-Le board affiche la **consommation réelle**, pas un pourcentage. Les vraies bornes de
-cycle ne sont exposées que par `/v3/enterprise/consumption/cycles` (scope enterprise), d'où
-le calcul local à partir de `DEVIN_RESET_DAY` (défaut 5, valeur du plan Pro individuel).
+⚠️ La limite ACU **absolue** du plan n'est pas dans le REST public
+(`/v3/enterprise/consumption/acu-limits` → 403 hors enterprise). En revanche les
+**quotas % jour/semaine** viennent bien de GetUserStatus (voir plus haut). Les
+vraies bornes de cycle ACU ne sont exposées que par
+`/v3/enterprise/consumption/cycles` (scope enterprise), d'où le calcul local à
+partir de `DEVIN_RESET_DAY` (défaut 5).
 
 ## Développement local
 
