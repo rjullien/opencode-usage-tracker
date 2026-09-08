@@ -485,11 +485,14 @@ func TestDashboardDevinAbsentWithoutSource(t *testing.T) {
 
 func TestDashboardDevinErrorRendered(t *testing.T) {
 	h := New(emptyPoller{}, nil, stubDevin{
-		s: &devin.Status{Error: "token Devin invalide ou expiré (HTTP 401)", FetchedAt: captureNow},
+		s: &devin.Status{
+			Error:     "token Devin refusé (HTTP 401) : clé absente, expirée ou hors scope — vérifier DEVIN_API_KEY len=12 sha256=1a2b3c4d",
+			FetchedAt: captureNow,
+		},
 	})
 	body := renderDashboard(t, h)
 
-	mustContain(t, body, "injoignable", "token Devin invalide ou expiré")
+	mustContain(t, body, "injoignable", "token Devin refusé (HTTP 401)", "vérifier DEVIN_API_KEY")
 }
 
 func TestAPIDevin(t *testing.T) {
@@ -519,20 +522,47 @@ func TestAPIDevinNotFoundWithoutSource(t *testing.T) {
 	}
 }
 
+func TestDashboardDevinAfficheLaFenetreDuCycle(t *testing.T) {
+	// Le Status porte les bornes réellement interrogées : la page doit afficher
+	// celles-là, pas un recalcul qui pourrait en diverger.
+	s := devinStatusOK()
+	s.CycleStart = mustTime("2026-09-05T08:00:00Z")
+	s.CycleEnd = mustTime("2026-10-05T08:00:00Z")
+
+	h := New(emptyPoller{}, nil, stubDevin{s: s})
+	h.now = func() time.Time { return mustTime("2026-09-20T12:00:00Z") }
+	body := renderDashboard(t, h)
+
+	mustContain(t, body,
+		"cycle du 05/09 au 05/10",
+		"2 jour(s) relevé(s)",
+		"reset budget",
+		"05/10 à 10:00", // fin de cycle 08:00 UTC = 10:00 à Paris
+	)
+}
+
 func TestNextResetDay(t *testing.T) {
+	// La frontière de journée est 08:00 UTC (minuit PST), comme la facturation
+	// Devin : c'est la même borne que celle envoyée en time_before à l'API.
 	// Le 3 du mois → reset le 5 du même mois.
 	early := mustTime("2026-09-03T10:00:00Z")
-	if got := nextResetDay(early); got.Day() != 5 || got.Month() != time.September {
-		t.Errorf("nextResetDay(03/09) = %v, want 05/09", got)
+	if got := nextResetDay(early); got.Day() != 5 || got.Month() != time.September || got.UTC().Hour() != 8 {
+		t.Errorf("nextResetDay(03/09) = %v, want 05/09 08:00 UTC", got)
 	}
 	// Le 7 du mois → reset le 5 du mois suivant.
 	late := mustTime("2026-09-07T10:00:00Z")
 	if got := nextResetDay(late); got.Day() != 5 || got.Month() != time.October {
 		t.Errorf("nextResetDay(07/09) = %v, want 05/10", got)
 	}
-	// Le 5 exactement : déjà passé 00:00 → mois suivant.
-	onDay := mustTime("2026-09-05T00:00:00Z")
-	if got := nextResetDay(onDay); got.Month() != time.October {
-		t.Errorf("nextResetDay(05/09 00:00) = %v, want 05/10", got)
+	// Le jour du reset à 07:00 UTC : la frontière 08:00 n'est pas franchie, le
+	// reset est encore devant nous le même jour.
+	before := mustTime("2026-09-05T07:00:00Z")
+	if got := nextResetDay(before); got.Day() != 5 || got.Month() != time.September {
+		t.Errorf("nextResetDay(05/09 07:00) = %v, want 05/09 08:00 UTC", got)
+	}
+	// Le jour du reset à 09:00 UTC : franchie, le prochain reset est en octobre.
+	after := mustTime("2026-09-05T09:00:00Z")
+	if got := nextResetDay(after); got.Day() != 5 || got.Month() != time.October {
+		t.Errorf("nextResetDay(05/09 09:00) = %v, want 05/10", got)
 	}
 }

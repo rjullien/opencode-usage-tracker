@@ -1,6 +1,7 @@
 package devin
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -19,10 +20,12 @@ type Fetcher struct {
 
 // NewFetcher crée un Fetcher avec cache TTL. token vide → Statuses() renvoie
 // un statut "non configuré" (le dashboard doit rester utilisable sans Devin).
+// Le token est trimmé ici aussi : un secret réduit à « \n » n'est pas un token
+// et doit désactiver la section, pas provoquer un 401 à chaque affichage.
 func NewFetcher(client *Client, token string, cacheTTL time.Duration) *Fetcher {
 	return &Fetcher{
 		client:   client,
-		token:    token,
+		token:    strings.TrimSpace(token),
 		cacheTTL: cacheTTL,
 	}
 }

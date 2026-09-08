@@ -131,6 +131,7 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 | `OPENCODE_GO_API_KEY` | — | Clé Go, affichée « Main » (au moins une clé requise) |
 | `OPENCODE_GO_API_KEY_<SUFFIXE>` | — | Clé supplémentaire, affichée « SUFFIXE » |
 | `DEVIN_API_KEY` | — | Token Devin (optionnel) — active la **section ACU Devin**, totalement séparée du lot OpenCode |
+| `DEVIN_ORG_ID` | — | Organisation Devin (`org-...`) à interroger, optionnelle : indispensable quand le token est un PAT dont `/v3/self` ne renvoie pas d'`org_id` |
 | `DEVIN_RESET_DAY` | `5` | Jour du mois du reset de budget Devin (plan Pro individuel, non exposé par l'API) |
 
 Toute variable commençant par `OPENCODE_GO_API_KEY` est découverte automatiquement, et le label
@@ -142,19 +143,44 @@ aucune modification de code. L'ordre d'affichage suit le nom de la variable, pou
 
 Sans `DEVIN_API_KEY`, rien ne change : la section Devin est absente du dashboard et
 `/api/devin` répond 404. Avec un token `cog_` (PAT ou service user), une carte
-« Devin — ACU » apparaît **en dessous** de la grille OpenCode : total ACU consommés,
-jours de consommation, répartition par produit (devin/cascade/terminal), org.
-Les 4 clés OpenCode partagées ne sont jamais mélangées à Devin.
+« Devin — ACU » apparaît **en dessous** de la grille OpenCode : cycle de facturation
+couvert, total ACU consommés, jours relevés, répartition par produit
+(devin/cascade/terminal), org. Les 4 clés OpenCode partagées ne sont jamais
+mélangées à Devin, et un échec Devin n'empêche jamais le rendu de la grille OpenCode.
 
-**API utilisée (validée 31/08/2026 avec un PAT `cog_`) :**
-- `GET /v3/self` → identité + `org_id`
-- `GET /v3/organizations/{org_id}/consumption/daily` → `{total_acus, consumption_by_date[{date, acus, acus_by_product}]}`
+**API publique utilisée (conforme à la spec v3, https://docs.devin.ai/v3-openapi.yaml) :**
+- `GET /v3/self` → identité du principal (`principal_type`, `user_id`, `api_key_id`…) et
+  `org_id` **quand il y en a un**
+- `GET /v3/organizations/{org_id}/consumption/daily?time_after=…&time_before=…` →
+  `{total_acus, consumption_by_date[{date, acus, acus_by_product}]}`
+
+**Résolution de l'organisation.** `org_id` est `nullable` et absent des champs requis de
+`PatUserSelf` comme de `ServiceUserSelf` : un PAT parfaitement valide peut ne porter
+aucune organisation, et aucun endpoint public ne permet de lister les organisations d'un
+PAT (seul `/v3/enterprise/organizations` existe, hors de portée d'un plan Pro). L'ordre de
+résolution est donc `DEVIN_ORG_ID` **puis** l'`org_id` de `/v3/self`. Si les deux sont
+vides, la section Devin s'affiche en erreur avec un message qui nomme `DEVIN_ORG_ID` et le
+`principal_type` reçu. L'identifiant `org-...` se lit dans l'URL de l'app Devin
+(ou dans la réponse d'un token de service user d'organisation).
+
+**Fenêtre interrogée.** La requête est explicitement bornée sur le cycle de facturation
+courant (`time_after`/`time_before` en secondes Unix) déduit de `DEVIN_RESET_DAY`, avec la
+frontière de journée documentée par la spec : minuit PST, soit **08:00:00 UTC** (décalage
+fixe, jamais PDT). Sans ces bornes l'API renvoie sa fenêtre par défaut, qui n'a aucune
+raison de coïncider avec le cycle affiché. La ligne « cycle du … au … » et la date de
+**reset budget** sont exactement ces deux bornes, et `/api/devin` les expose
+(`cycleStart`, `cycleEnd`).
+
+**Diagnostic.** Le token est trimmé avant usage (un secret monté depuis Kubernetes porte
+souvent un `\n` final, qui produisait un 401 interprété à tort comme un token expiré). Les
+logs de boot et les erreurs 401/403 portent la longueur et une empreinte SHA-256 tronquée
+de la clé (`len=44 sha256=1a2b3c4d`), jamais la clé elle-même.
 
 ⚠️ L'API publique n'expose **pas** la limite ACU du plan (`acu_limit`,
 `daily_quota_remaining_percent`) : elle ne vit que dans le gRPC interne du CLI.
-Le board affiche la **consommation réelle**, pas un pourcentage. La date de
-**reset budget** est fixée au **5 du mois** (`DEVIN_RESET_DAY`, défaut 5) —
-valeur du plan Pro individuel, l'API REST ne la renvoie pas.
+Le board affiche la **consommation réelle**, pas un pourcentage. Les vraies bornes de
+cycle ne sont exposées que par `/v3/enterprise/consumption/cycles` (scope enterprise), d'où
+le calcul local à partir de `DEVIN_RESET_DAY` (défaut 5, valeur du plan Pro individuel).
 
 ## Développement local
 

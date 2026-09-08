@@ -346,7 +346,7 @@
             </div>
             <div class="lines">
               <div class="line">
-                <span class="num">période couverte : {{$d.Status.DayCount}} jour(s)</span>
+                <span class="num">cycle du {{fmtDay $d.CycleStart}} au {{fmtDay $d.ResetAt}} : {{$d.Status.DayCount}} jour(s) relevé(s)</span>
                 <span class="num">{{fmtACU $d.Status.ACUConsumed}} au total</span>
               </div>
               {{with $d.Status.Days}}
