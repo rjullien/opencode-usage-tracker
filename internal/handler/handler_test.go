@@ -443,6 +443,8 @@ func (st stubDevin) Statuses() *devin.Status { return st.s }
 // sortent de la fenêtre affichée resterait verte, mais cesserait de décrire ce
 // que l'API peut réellement renvoyer.
 func devinStatusPourCycle(cycleStart, cycleEnd time.Time) *devin.Status {
+	daily := 7.0
+	dailyReset := mustTime("2026-09-09T08:00:00Z")
 	return &devin.Status{
 		ACUConsumed: 42.5,
 		DayCount:    2,
@@ -461,7 +463,12 @@ func devinStatusPourCycle(cycleStart, cycleEnd time.Time) *devin.Status {
 		},
 		CycleStart: &cycleStart,
 		CycleEnd:   &cycleEnd,
-		FetchedAt:  captureNow,
+		Quota: &devin.Quota{
+			PlanName:         "Pro",
+			DailyUsedPercent: &daily,
+			DailyResetsAt:    &dailyReset,
+		},
+		FetchedAt: captureNow,
 	}
 }
 
@@ -476,14 +483,16 @@ func TestDashboardWithDevinSection(t *testing.T) {
 	body := renderDashboard(t, h)
 
 	mustContain(t, body,
-		"Devin — ACU",
+		"Devin — Pro",
 		"hors lot OpenCode",
+		"Daily",
+		"7%",
 		"42,5 ACU",
 		"2 jour(s)",
 		"dernier relevé",
 		"répartition : devin 12,5",
 		"org-93932dfb42b443c78ba280183a3d697d",
-		"reset budget",
+		"reset budget ACU",
 	)
 }
 

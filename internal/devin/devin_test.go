@@ -52,10 +52,22 @@ func testServer(t *testing.T, selfBody, consumptionBody string, status int) *dev
 // testServerStatuts permet un code de statut différent par endpoint : c'est le
 // seul moyen d'exercer un /v3/self valide suivi d'un 403 ou d'un 404 sur
 // l'organisation, cas d'un DEVIN_ORG_ID erroné.
+//
+// GetUserStatus (Connect-RPC) est servi sur le même hôte de test : l'auth n'est
+// pas Bearer, l'apiKey voyage dans le JSON metadata. Un corps de quota
+// minimal est renvoyé pour que FetchStatus remplisse Status.Quota sans
+// QuotaError.
 func testServerStatuts(t *testing.T, selfBody string, selfStatus int, consumptionBody string, consumptionStatus int) *devinServer {
 	t.Helper()
 	rec := &devinServer{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "GetUserStatus") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			w.Write([]byte(quotaBodyOK))
+			return
+		}
+
 		got := r.Header.Get("Authorization")
 		rec.mu.Lock()
 		rec.authSeen = append(rec.authSeen, got)
@@ -86,10 +98,31 @@ func testServerStatuts(t *testing.T, selfBody string, selfStatus int, consumptio
 	return rec
 }
 
+// quotaBodyOK mime la réponse GetUserStatus constatée en prod (plan Pro) :
+// daily remaining 93 % → used 7 %, weekly remaining absent, resets en Unix
+// string (forme réelle de l'API).
+const quotaBodyOK = `{
+  "userStatus":{
+    "planStatus":{
+      "planInfo":{"planName":"Pro","hideDailyQuota":false},
+      "planStart":"2026-08-18T20:06:33Z",
+      "planEnd":"2026-09-18T20:06:33Z",
+      "dailyQuotaRemainingPercent":93,
+      "dailyQuotaResetAtUnix":"1788940800",
+      "weeklyQuotaResetAtUnix":"1789286400"
+    }
+  }
+}`
+
 // testConfig est la configuration commune des tests : token attendu par
-// testServer, timeout court, URL du faux serveur.
+// testServer, timeout court, URL du faux serveur pour REST et siège.
 func testConfig(baseURL string) Config {
-	return Config{Token: "test-token", Timeout: 2 * time.Second, BaseURL: baseURL}
+	return Config{
+		Token:   "test-token",
+		Timeout: 2 * time.Second,
+		BaseURL: baseURL,
+		SeatURL: baseURL,
+	}
 }
 
 // frozen fige l'horloge du client pour rendre les bornes de cycle assertables.
@@ -214,6 +247,18 @@ func TestFetchStatusOK(t *testing.T) {
 	}
 	if s.FetchedAt.IsZero() {
 		t.Error("FetchedAt should be set")
+	}
+	if s.QuotaError != "" {
+		t.Errorf("QuotaError = %q, want vide", s.QuotaError)
+	}
+	if s.Quota == nil || s.Quota.PlanName != "Pro" {
+		t.Fatalf("Quota = %+v, want plan Pro", s.Quota)
+	}
+	if s.Quota.DailyUsedPercent == nil || *s.Quota.DailyUsedPercent != 7 {
+		t.Errorf("DailyUsedPercent = %v, want 7 (100-93)", s.Quota.DailyUsedPercent)
+	}
+	if s.Quota.WeeklyUsedPercent != nil {
+		t.Errorf("WeeklyUsedPercent = %v, want nil (absent sur plan Pro)", s.Quota.WeeklyUsedPercent)
 	}
 }
 
@@ -632,6 +677,10 @@ func TestFetcherCache(t *testing.T) {
 	var fetches int // un fetch = paire self + consumption
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "GetUserStatus") {
+			w.Write([]byte(quotaBodyOK))
+			return
+		}
 		if r.URL.Path == "/v3/self" {
 			fetches++
 			w.Write([]byte(selfBody))
@@ -697,4 +746,105 @@ func mustParse(t *testing.T, s string) time.Time {
 func mustEpoch(t *testing.T, s string) int64 {
 	t.Helper()
 	return mustParse(t, s).Unix()
+}
+
+// ---- Quotas GetUserStatus ----
+
+func TestParseQuotaDailyOnly(t *testing.T) {
+	q, err := parseQuota([]byte(quotaBodyOK))
+	if err != nil {
+		t.Fatalf("parseQuota: %v", err)
+	}
+	if q.PlanName != "Pro" {
+		t.Errorf("PlanName = %q", q.PlanName)
+	}
+	if q.DailyUsedPercent == nil || *q.DailyUsedPercent != 7 {
+		t.Errorf("DailyUsedPercent = %v, want 7", q.DailyUsedPercent)
+	}
+	if q.WeeklyUsedPercent != nil {
+		t.Errorf("WeeklyUsedPercent = %v, want nil", q.WeeklyUsedPercent)
+	}
+	if q.DailyResetsAt == nil || q.DailyResetsAt.UTC().Format(time.RFC3339) != "2026-09-09T08:00:00Z" {
+		t.Errorf("DailyResetsAt = %v", q.DailyResetsAt)
+	}
+	if q.WeeklyResetsAt == nil || q.WeeklyResetsAt.UTC().Format(time.RFC3339) != "2026-09-13T08:00:00Z" {
+		t.Errorf("WeeklyResetsAt = %v", q.WeeklyResetsAt)
+	}
+	if q.PlanStart == nil || q.PlanEnd == nil {
+		t.Errorf("plan window manquante: %+v", q)
+	}
+}
+
+func TestParseQuotaWeeklyPresent(t *testing.T) {
+	raw := `{
+	  "userStatus":{"planStatus":{
+	    "planInfo":{"planName":"Teams"},
+	    "dailyQuotaRemainingPercent":80,
+	    "weeklyQuotaRemainingPercent":55,
+	    "dailyQuotaResetAtUnix":1788940800,
+	    "weeklyQuotaResetAtUnix":1789286400
+	  }}
+	}`
+	q, err := parseQuota([]byte(raw))
+	if err != nil {
+		t.Fatalf("parseQuota: %v", err)
+	}
+	if q.DailyUsedPercent == nil || *q.DailyUsedPercent != 20 {
+		t.Errorf("daily used = %v, want 20", q.DailyUsedPercent)
+	}
+	if q.WeeklyUsedPercent == nil || *q.WeeklyUsedPercent != 45 {
+		t.Errorf("weekly used = %v, want 45", q.WeeklyUsedPercent)
+	}
+}
+
+func TestParseQuotaHideDaily(t *testing.T) {
+	raw := `{
+	  "userStatus":{"planStatus":{
+	    "planInfo":{"planName":"Pro","hideDailyQuota":true},
+	    "dailyQuotaRemainingPercent":50,
+	    "weeklyQuotaRemainingPercent":70
+	  }}
+	}`
+	q, err := parseQuota([]byte(raw))
+	if err != nil {
+		t.Fatalf("parseQuota: %v", err)
+	}
+	if q.DailyUsedPercent != nil {
+		t.Errorf("DailyUsedPercent = %v, want nil (hideDailyQuota)", q.DailyUsedPercent)
+	}
+	if q.WeeklyUsedPercent == nil || *q.WeeklyUsedPercent != 30 {
+		t.Errorf("weekly used = %v, want 30", q.WeeklyUsedPercent)
+	}
+}
+
+func TestFetchStatusQuotaSoftFail(t *testing.T) {
+	// Siège qui renvoie 500 : les ACU REST doivent quand même arriver.
+	rest := testServer(t, selfBody, consumptionBody, 200)
+	seat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"code":"unavailable"}`, 500)
+	}))
+	t.Cleanup(seat.Close)
+
+	cfg := testConfig(rest.URL)
+	cfg.SeatURL = seat.URL
+	c := NewClient(cfg)
+	s, err := c.FetchStatus()
+	if err != nil {
+		t.Fatalf("FetchStatus: %v (échec quota soft)", err)
+	}
+	if s.ACUConsumed != 42.5 {
+		t.Errorf("ACUConsumed = %v, want 42.5 malgré échec quota", s.ACUConsumed)
+	}
+	if s.Quota != nil {
+		t.Errorf("Quota = %+v, want nil", s.Quota)
+	}
+	if s.QuotaError == "" {
+		t.Error("QuotaError vide, want un diagnostic")
+	}
+}
+
+func TestClampPercent(t *testing.T) {
+	if clampPercent(-5) != 0 || clampPercent(150) != 100 || clampPercent(42.5) != 42.5 {
+		t.Fatalf("clampPercent hors bornes")
+	}
 }

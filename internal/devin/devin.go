@@ -15,12 +15,16 @@ import (
 	"time"
 )
 
-// API Devin — endpoints publics utilisés (v3, token PAT ou service user `cog_`) :
+// API Devin — deux hôtes :
 //
-//	GET /v3/self                                  → identité (+ org_id éventuel)
-//	GET /v3/organizations/{org}/consumption/daily → consommation ACU du cycle
+//	REST https://api.devin.ai
+//	  GET /v3/self                                  → identité (+ org_id éventuel)
+//	  GET /v3/organizations/{org}/consumption/daily → consommation ACU du cycle
 //
-// Réponses telles que décrites par la spec officielle v3 :
+//	Connect-RPC https://server.codeium.com
+//	  POST …/SeatManagementService/GetUserStatus    → quotas jour/semaine (%)
+//
+// Réponses REST telles que décrites par la spec officielle v3 :
 //
 //	GET /v3/self → anyOf de 4 schémas (ServiceUserSelf, PatUserSelf,
 //	DevinBrainUserSelf, WindsurfSessionUserSelf), par exemple :
@@ -33,7 +37,7 @@ import (
 //	     "acus_by_product":{"devin":12.5,"cascade":0,"terminal":0,"review":null}}
 //	  ]}
 //
-// Deux pièges que ce client doit absorber, appris en production :
+// Trois pièges que ce client doit absorber, appris en production :
 //
 //  1. `org_id` est nullable ET absent des `required` de PatUserSelf comme de
 //     ServiceUserSelf : un PAT parfaitement valide peut ne porter AUCUNE
@@ -44,10 +48,13 @@ import (
 //     serveur, qui n'a aucune raison de coïncider avec le cycle de facturation
 //     affiché par le dashboard. On borne donc explicitement la requête sur le
 //     cycle courant (voir CycleBounds).
+//  3. Les % jour/semaine (dailyQuotaRemainingPercent…) ne sont PAS dans le
+//     REST public ni dans /v3/enterprise/consumption/acu-limits (403 hors
+//     enterprise). Ils viennent de GetUserStatus ; le même DEVIN_API_KEY
+//     (cog_) fonctionne comme apiKey dans le metadata Connect-RPC.
 //
-// ⚠️ La LIMITE ACU (`acu_limit`, `daily_quota_remaining_percent`...) n'est PAS
-// exposée par l'API REST publique : elle ne vit que dans le gRPC interne du CLI
-// (GetUserStatus). Le board affiche donc la CONSOMMATION ACU réelle.
+// ⚠️ La LIMITE ACU absolue du plan n'est toujours pas dans le REST. Le board
+// affiche la consommation ACU + les quotas % jour/semaine de GetUserStatus.
 
 const apiBaseURL = "https://api.devin.ai"
 
@@ -107,11 +114,12 @@ type ACUsByProduct struct {
 	Review   *float64 `json:"review"`
 }
 
-// Status porte les données ACU Devin affichées par le dashboard.
+// Status porte les données Devin affichées par le dashboard : consommation ACU
+// (REST api.devin.ai) + quotas jour/semaine (Connect-RPC GetUserStatus).
 //
-// Le dashboard montre la CONSOMMATION réelle (total_acus de la période) et sa
-// répartition par produit. Pas de pourcentage : la limite ACU du plan n'est
-// pas exposée par l'API publique.
+// La limite ACU absolue du plan n'est toujours pas dans le REST public ; en
+// revanche GetUserStatus expose daily/weeklyQuotaRemainingPercent — ce sont
+// ces pourcentages (retournés en « used ») qui alimentent les barres quota.
 type Status struct {
 	// ACUConsumed : total ACU consommés sur le cycle de facturation interrogé
 	// (bornes CycleStart/CycleEnd), et non sur la fenêtre par défaut du serveur.
@@ -136,6 +144,14 @@ type Status struct {
 	// publier « 0001-01-01T00:00:00Z » (omitempty est sans effet sur une struct).
 	CycleStart *time.Time `json:"cycleStart,omitempty"`
 	CycleEnd   *time.Time `json:"cycleEnd,omitempty"`
+
+	// Quota : pourcentages jour/semaine via GetUserStatus. omitempty : si le
+	// siège Windsurf est injoignable on garde quand même les ACU REST.
+	Quota *Quota `json:"quota,omitempty"`
+
+	// QuotaError : diagnostic soft quand GetUserStatus échoue sans faire
+	// échouer toute la carte (les ACU restent affichables).
+	QuotaError string `json:"quotaError,omitempty"`
 
 	FetchedAt time.Time `json:"fetchedAt"`
 	Error     string    `json:"error,omitempty"`
@@ -164,6 +180,9 @@ type Config struct {
 	Timeout time.Duration
 	// BaseURL : vide → api.devin.ai (renseigné par les tests).
 	BaseURL string
+	// SeatURL : vide → server.codeium.com (GetUserStatus). Surchargeable pour
+	// les tests et si Devin change d'hôte (credentials.toml api_server_url).
+	SeatURL string
 }
 
 // ConfigFromEnv lit la configuration Devin de l'environnement. Aucune variable
@@ -174,13 +193,15 @@ func ConfigFromEnv(timeout time.Duration) Config {
 		OrgID:    strings.TrimSpace(os.Getenv("DEVIN_ORG_ID")),
 		ResetDay: ResetDayFromEnv(),
 		Timeout:  timeout,
+		SeatURL:  strings.TrimSpace(os.Getenv("DEVIN_API_SERVER")),
 	}
 }
 
-// Client appelle l'API Devin.
+// Client appelle l'API Devin (REST) et le siège Windsurf (GetUserStatus).
 type Client struct {
 	http     *http.Client
 	baseURL  string
+	seatURL  string
 	token    string
 	orgID    string
 	resetDay int
@@ -196,9 +217,14 @@ func NewClient(cfg Config) *Client {
 	if baseURL == "" {
 		baseURL = apiBaseURL
 	}
+	seatURL := cfg.SeatURL
+	if seatURL == "" {
+		seatURL = defaultSeatBaseURL
+	}
 	return &Client{
 		http:    &http.Client{Timeout: cfg.Timeout},
 		baseURL: baseURL,
+		seatURL: seatURL,
 		// Défense en profondeur : un secret Infisical → Kubernetes porte très
 		// souvent un \n final, et « Bearer cog_xxx\n » se traduit par un 401
 		// que l'on interprétait à tort comme un token expiré.
@@ -236,7 +262,20 @@ func (c *Client) FetchStatus() (Status, error) {
 	// Le Status porte la fin de CYCLE (celle qu'affiche « reset budget »), pas
 	// la borne plafonnée envoyée à l'API : la première est la période facturée,
 	// la seconde n'est qu'une précaution sur la requête.
-	return parseResponse(body, orgID, start, end)
+	st, err := parseResponse(body, orgID, start, end)
+	if err != nil {
+		return Status{}, err
+	}
+
+	// Quotas jour/semaine : chemin soft. Un échec GetUserStatus ne doit pas
+	// masquer les ACU déjà récupérés (REST et siège sont des hôtes distincts).
+	if q, qerr := c.fetchQuota(); qerr != nil {
+		log.Printf("Devin: quotas GetUserStatus indisponibles : %v", qerr)
+		st.QuotaError = qerr.Error()
+	} else {
+		st.Quota = &q
+	}
+	return st, nil
 }
 
 // resolveOrg choisit l'organisation à interroger : la configuration d'abord,

@@ -157,20 +157,29 @@ type DashboardData struct {
 	KeyCount int
 }
 
-// DevinView est la section ACU Devin, totalement séparée des abonnements
-// OpenCode partagés. nil quand aucun token n'est configuré (section absente).
+// DevinView est la section Devin, totalement séparée des abonnements OpenCode
+// partagés. nil quand aucun token n'est configuré (section absente).
 //
-// Pas de pourcentage ni de feu : l'API publique Devin n'expose pas la limite
-// ACU (le gRPC interne du CLI seulement). On affiche la consommation réelle.
-// CycleStart et ResetAt bornent le cycle de facturation : ce sont les mêmes
-// bornes que celles envoyées en time_after/time_before à l'API, pour que le
-// total affiché et la période affichée parlent bien de la même chose.
+// Affiche : quotas jour/semaine (GetUserStatus) + consommation ACU du cycle
+// (REST). CycleStart et ResetAt bornent le cycle ACU : ce sont les mêmes
+// bornes que celles envoyées en time_after/time_before à l'API.
 type DevinView struct {
 	Status devin.Status
 	// CycleStart : début du cycle de facturation courant.
 	CycleStart time.Time
-	// ResetAt : fin du cycle courant, donc prochain reset de budget.
+	// ResetAt : fin du cycle courant, donc prochain reset de budget ACU.
 	ResetAt time.Time
+	// Quotas : fenêtres jour/semaine prêtes à afficher (nil/absent omis).
+	Quotas []DevinQuotaWindow
+}
+
+// DevinQuotaWindow est une barre de quota Devin (daily ou weekly).
+type DevinQuotaWindow struct {
+	Name     string
+	Percent  int
+	Level    opencode.Level
+	ResetsAt time.Time
+	ResetIn  time.Duration
 }
 
 func buildDevinView(s *devin.Status, now time.Time) *DevinView {
@@ -189,7 +198,42 @@ func buildDevinView(s *devin.Status, now time.Time) *DevinView {
 	if s.CycleEnd != nil {
 		v.ResetAt = *s.CycleEnd
 	}
+	v.Quotas = buildDevinQuotas(s.Quota, now)
 	return v
+}
+
+func buildDevinQuotas(q *devin.Quota, now time.Time) []DevinQuotaWindow {
+	if q == nil {
+		return nil
+	}
+	var out []DevinQuotaWindow
+	if q.DailyUsedPercent != nil {
+		pct := int(*q.DailyUsedPercent + 0.5)
+		w := DevinQuotaWindow{
+			Name:    "Daily",
+			Percent: pct,
+			Level:   opencode.AbsoluteLevel(pct),
+		}
+		if q.DailyResetsAt != nil {
+			w.ResetsAt = *q.DailyResetsAt
+			w.ResetIn = resetIn(w.ResetsAt, now)
+		}
+		out = append(out, w)
+	}
+	if q.WeeklyUsedPercent != nil {
+		pct := int(*q.WeeklyUsedPercent + 0.5)
+		w := DevinQuotaWindow{
+			Name:    "Weekly",
+			Percent: pct,
+			Level:   opencode.AbsoluteLevel(pct),
+		}
+		if q.WeeklyResetsAt != nil {
+			w.ResetsAt = *q.WeeklyResetsAt
+			w.ResetIn = resetIn(w.ResetsAt, now)
+		}
+		out = append(out, w)
+	}
+	return out
 }
 
 // nextResetDay renvoie la fin du cycle de facturation Devin courant, c'est-à-dire
