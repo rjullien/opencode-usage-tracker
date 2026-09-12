@@ -100,9 +100,10 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 
 | Route | Description |
 |-------|-------------|
-| `GET /` | Dashboard HTML : feu par abonnement + feu global + section Devin (optionnelle) |
+| `GET /` | Dashboard HTML : feu par abonnement + feu global + sections Devin / Cursor (optionnelles) |
 | `GET /api/usage` | JSON des quotas OpenCode, enrichi du budget calculé |
 | `GET /api/devin` | JSON du quota ACU Devin (404 si non configuré) |
+| `GET /api/cursor` | JSON Cursor + Grok Bot (404 si non configuré) |
 | `GET /health` | Health check (`{"status":"ok"}`) |
 
 `/api/usage` conserve les champs existants (`label`, `windows`, `error`, `fetchedAt`, et par fenêtre
@@ -134,6 +135,7 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 | `DEVIN_ORG_ID` | — | Organisation Devin (`org-...`) à interroger, optionnelle : indispensable quand le token est un PAT dont `/v3/self` ne renvoie pas d'`org_id` |
 | `DEVIN_RESET_DAY` | `5` | Jour du mois du reset de budget Devin (plan Pro individuel, non exposé par l'API). Seules les valeurs `1`–`28` sont retenues : au-delà, tous les mois n'ont pas ce jour, et la variable retombe sur le défaut `5` |
 | `DEVIN_API_SERVER` | `https://server.codeium.com` | Hôte Connect-RPC pour `GetUserStatus` (quotas jour/semaine) |
+| `CURSOR_REFRESH_TOKEN` | — | Refresh token Cursor (optionnel) — active la **section Cursor + Grok Bot**. Stocker uniquement ce secret dans Infisical ; l'access JWT est dérivé en mémoire |
 
 Toute variable commençant par `OPENCODE_GO_API_KEY` est découverte automatiquement, et le label
 d'affichage est déduit du suffixe : `OPENCODE_GO_API_KEY_R` s'affiche « R »,
@@ -227,6 +229,55 @@ c'est le scope du token ou l'état de l'organisation qu'il déclare qu'il faut r
 vraies bornes de cycle ACU ne sont exposées que par
 `/v3/enterprise/consumption/cycles` (scope enterprise), d'où le calcul local à
 partir de `DEVIN_RESET_DAY` (défaut 5).
+
+
+### Section Cursor + Grok Bot (optionnelle, à part du lot OpenCode)
+
+Sans `CURSOR_REFRESH_TOKEN`, rien ne change : la section est absente et
+`/api/cursor` répond 404. Avec un refresh token, une carte « Cursor — Pro »
+apparaît sous la grille OpenCode (et sous Devin le cas échéant) : **usage
+mensuel** (total / auto / API, dépense, fin de cycle) + **Grok Bot**
+hebdomadaire si le compte a une allowance. Un échec Cursor n'empêche jamais
+le rendu OpenCode/Devin ; un échec Grok Bot n'empêche jamais d'afficher
+l'usage mensuel Cursor.
+
+⚠️ Ces APIs Cursor (`api2.cursor.sh` DashboardService + OAuth) sont **non
+documentées / non officielles** et susceptibles de changer. En cas de
+`shouldLogout: true` ou de refresh révoqué, il faut se ré-authentifier et
+mettre à jour le secret.
+
+**Auth renouvelable (adaptée à Infisical)**
+
+- Secret durable : `CURSOR_REFRESH_TOKEN` uniquement (jamais l'access token).
+- Au runtime, le service appelle `POST https://api2.cursor.sh/oauth/token`
+  avec `grant_type=refresh_token` et le client_id public Cursor, obtient un
+  access JWT, et le garde **en mémoire process**.
+- Renouvellement automatique si le JWT expire dans ~3 minutes, ou sur HTTP 401.
+- Cursor ne consomme en général pas le refresh (RFC 6749 §6). Si une réponse
+  porte un nouveau `refresh_token`, il est préféré en mémoire et un log invite
+  à mettre à jour Infisical.
+
+**Où trouver le refresh token**
+
+1. **SQLite Cursor desktop** (clé `cursorAuth/refreshToken`) :
+   - macOS : `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`
+   - Linux : `~/.config/Cursor/User/globalStorage/state.vscdb`
+   - Windows : `%APPDATA%\Cursor\User\globalStorage\state.vscdb`
+   ```bash
+   sqlite3 state.vscdb "SELECT value FROM ItemTable WHERE key = 'cursorAuth/refreshToken';"
+   ```
+2. **CLI `agent login`** : entrée keychain / secret service
+   `cursor-refresh-token` (selon la plateforme).
+
+**Infisical** — exemple de chemin : `/agents/cursor` contenant uniquement
+`CURSOR_REFRESH_TOKEN`. Ne pas y mettre d'access token.
+
+**Endpoints interrogés** (Bearer access token, `Connect-Protocol-Version: 1`) :
+
+- `POST …/aiserver.v1.DashboardService/GetCurrentPeriodUsage`
+- `POST …/aiserver.v1.DashboardService/GetPlanInfo` (optionnel)
+- `POST …/aiserver.v1.DashboardService/GetSandUsageStatus` (Grok Bot) ;
+  repli cookie `WorkosCursorSessionToken` sur `cursor.com` si besoin
 
 ## Développement local
 

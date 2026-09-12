@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rjullien/opencode-usage-tracker/internal/bifrost"
+	"github.com/rjullien/opencode-usage-tracker/internal/cursor"
 	"github.com/rjullien/opencode-usage-tracker/internal/devin"
 	"github.com/rjullien/opencode-usage-tracker/internal/handler"
 	"github.com/rjullien/opencode-usage-tracker/internal/opencode"
@@ -69,12 +70,25 @@ func main() {
 		log.Printf("Devin ACU source: absente (pas de DEVIN_API_KEY)")
 	}
 
-	h := handler.New(fetcher, weights, devSrc)
+	// Cursor + Grok Bot : OPTIONNEL. Sans CURSOR_REFRESH_TOKEN, la section
+	// est absente. Seul le refresh token est stocké (Infisical) ; l'access JWT
+	// reste en mémoire process.
+	var curSrc handler.CursorSource
+	curCfg := cursor.ConfigFromEnv(15 * time.Second)
+	if curCfg.RefreshToken != "" {
+		curSrc = cursor.NewFetcher(cursor.NewClient(curCfg), curCfg.RefreshToken, cacheTTL)
+		log.Printf("Cursor source: configurée (CURSOR_REFRESH_TOKEN %s)", cursor.Fingerprint(curCfg.RefreshToken))
+	} else {
+		log.Printf("Cursor source: absente (pas de CURSOR_REFRESH_TOKEN)")
+	}
+
+	h := handler.New(fetcher, weights, devSrc, curSrc)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.Dashboard)
 	mux.HandleFunc("/api/usage", h.APIUsage)
 	mux.HandleFunc("/api/devin", h.APIDevin)
+	mux.HandleFunc("/api/cursor", h.APICursor)
 	mux.HandleFunc("/health", h.Health)
 
 	srv := &http.Server{
