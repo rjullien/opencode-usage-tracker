@@ -297,6 +297,25 @@ mapper `CURSOR_API_KEY` depuis le secret syncé (voir `vps-infra`).
 - `POST …/aiserver.v1.DashboardService/GetSandUsageStatus` (Grok Bot) ;
   repli cookie `WorkosCursorSessionToken` sur `cursor.com` si besoin
 
+**Montants ($) — forfait inclus et hors forfait**
+
+Cursor facture en **USD** ; le dashboard affiche les montants en `$`
+(virgule française). Tous les champs monétaires de l'API sont en **cents**.
+
+| Affichage | Source | Champs |
+|-----------|--------|--------|
+| **Forfait inclus** | `GetCurrentPeriodUsage` → `planUsage` | `includedSpend`, `totalSpend`, `limit`, `remaining`, `bonusSpend` (+ % via `totalPercentUsed`) |
+| **Hors forfait** | même réponse → `spendLimitUsage` | `totalSpend` (dépensé on-demand), limite `individualLimit` ou `pooledLimit` selon `limitType` (`user` / `team`), `*Remaining` |
+| Plan (nom / plafond de secours) | `GetPlanInfo` → `planInfo` | `planName`, `includedAmountCents` (fallback si `planUsage.limit` absent), `price` |
+| Grok Bot | `GetSandUsageStatus` | **pas de montant** — seulement `%` / reset |
+
+Si `spendLimitUsage` est absent ou à zéro (spend et limites), la ligne
+« Hors forfait » n'apparaît pas. S'il y a une dépense sans limite connue :
+montant seul + « (limite inconnue) ».
+
+⚠️ Structure issue de la doc community (OpenUsage / AI-Usage) et du parsing
+local mocké — endpoints non officiels. Non validé ici contre un compte live.
+
 ## Développement local
 
 ```bash

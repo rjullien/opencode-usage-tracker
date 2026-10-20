@@ -53,14 +53,36 @@ type Status struct {
 }
 
 // PeriodUsage est le quota mensuel Cursor (GetCurrentPeriodUsage).
+// Montants en cents USD (facturation Cursor).
 type PeriodUsage struct {
-	TotalPercent float64    `json:"totalPercent"`
-	AutoPercent  float64    `json:"autoPercent"`
-	APIPercent   float64    `json:"apiPercent"`
-	SpendCents   int64      `json:"spendCents"`
-	LimitCents   int64      `json:"limitCents"`
-	CycleStart   *time.Time `json:"cycleStart,omitempty"`
-	CycleEnd     *time.Time `json:"cycleEnd,omitempty"`
+	TotalPercent float64 `json:"totalPercent"`
+	AutoPercent  float64 `json:"autoPercent"`
+	APIPercent   float64 `json:"apiPercent"`
+
+	// Forfait inclus (planUsage) — cents USD.
+	// SpendCents = planUsage.totalSpend (= includedSpend + bonusSpend).
+	// LimitCents = planUsage.limit (plafond inclus du plan).
+	SpendCents         int64 `json:"spendCents"`
+	IncludedSpendCents int64 `json:"includedSpendCents"`
+	BonusSpendCents    int64 `json:"bonusSpendCents,omitempty"`
+	LimitCents         int64 `json:"limitCents"`
+	RemainingCents     int64 `json:"remainingCents,omitempty"`
+
+	// Hors forfait / on-demand (spendLimitUsage). Nil si absent ou tout à zéro.
+	OnDemand *OnDemandUsage `json:"onDemand,omitempty"`
+
+	CycleStart *time.Time `json:"cycleStart,omitempty"`
+	CycleEnd   *time.Time `json:"cycleEnd,omitempty"`
+}
+
+// OnDemandUsage est le budget hors forfait (usage-based / on-demand)
+// pour la période courante (spendLimitUsage).
+type OnDemandUsage struct {
+	SpendCents     int64   `json:"spendCents"`
+	LimitCents     int64   `json:"limitCents,omitempty"` // 0 = limite inconnue
+	RemainingCents int64   `json:"remainingCents,omitempty"`
+	Percent        float64 `json:"percent,omitempty"` // spend/limit*100 si limit > 0
+	LimitType      string  `json:"limitType,omitempty"` // "user" | "team"
 }
 
 // GrokUsage est l'allowance hebdomadaire Grok Bot (GetSandUsageStatus).
@@ -206,7 +228,12 @@ func (c *Client) fetchPeriod() (PeriodUsage, string, error) {
 	if planRaw, perr := c.connectRPC(planInfoPath, false); perr != nil {
 		log.Printf("Cursor: GetPlanInfo indisponible : %v", perr)
 	} else {
-		planName = parsePlanName(planRaw)
+		info := parsePlanInfo(planRaw)
+		planName = info.PlanName
+		// Fallback : includedAmountCents de GetPlanInfo si planUsage.limit absent.
+		if period.LimitCents == 0 && info.IncludedAmountCents > 0 {
+			period.LimitCents = info.IncludedAmountCents
+		}
 	}
 	return period, planName, nil
 }
@@ -316,10 +343,12 @@ func (c *Client) fetchGrokWeb() ([]byte, error) {
 // ---- parsing ----------------------------------------------------------------
 
 type periodUsageWire struct {
-	BillingCycleStart string         `json:"billingCycleStart"`
-	BillingCycleEnd   string         `json:"billingCycleEnd"`
-	PlanUsage         *planUsageWire `json:"planUsage"`
-	PlanUsageAlt      *planUsageWire `json:"plan_usage"`
+	BillingCycleStart string             `json:"billingCycleStart"`
+	BillingCycleEnd   string             `json:"billingCycleEnd"`
+	PlanUsage         *planUsageWire     `json:"planUsage"`
+	PlanUsageAlt      *planUsageWire     `json:"plan_usage"`
+	SpendLimitUsage   *spendLimitWire    `json:"spendLimitUsage"`
+	SpendLimitAlt     *spendLimitWire    `json:"spend_limit_usage"`
 }
 
 type planUsageWire struct {
@@ -328,11 +357,25 @@ type planUsageWire struct {
 	APIPercentUsed   json.Number `json:"apiPercentUsed"`
 	TotalSpend       json.Number `json:"totalSpend"`
 	IncludedSpend    json.Number `json:"includedSpend"`
+	BonusSpend       json.Number `json:"bonusSpend"`
+	Remaining        json.Number `json:"remaining"`
 	Limit            json.Number `json:"limit"`
 	TotalPercent     json.Number `json:"totalPercent"`
 	AutoPercent      json.Number `json:"autoPercent"`
 	APIPercent       json.Number `json:"apiPercent"`
 	Spend            json.Number `json:"spend"`
+}
+
+// spendLimitWire = hors forfait / on-demand (docs community OpenUsage / AI-Usage).
+type spendLimitWire struct {
+	TotalSpend          json.Number `json:"totalSpend"`
+	PooledLimit         json.Number `json:"pooledLimit"`
+	PooledUsed          json.Number `json:"pooledUsed"`
+	PooledRemaining     json.Number `json:"pooledRemaining"`
+	IndividualLimit     json.Number `json:"individualLimit"`
+	IndividualUsed      json.Number `json:"individualUsed"`
+	IndividualRemaining json.Number `json:"individualRemaining"`
+	LimitType           string      `json:"limitType"`
 }
 
 func parsePeriodUsage(raw []byte) (PeriodUsage, error) {
@@ -348,12 +391,27 @@ func parsePeriodUsage(raw []byte) (PeriodUsage, error) {
 		return PeriodUsage{}, fmt.Errorf("GetCurrentPeriodUsage: planUsage absent")
 	}
 
+	included := numInt(pu.IncludedSpend)
+	bonus := numInt(pu.BonusSpend)
+	totalSpend := numInt(firstNumber(pu.TotalSpend, pu.Spend))
+	if totalSpend == 0 && (included > 0 || bonus > 0) {
+		totalSpend = included + bonus
+	}
+	if included == 0 && totalSpend > 0 && bonus == 0 {
+		// Payloads anciens : parfois seul totalSpend est présent.
+		included = totalSpend
+	}
+
 	out := PeriodUsage{
-		TotalPercent: clampPercent(numFloat(firstNumber(pu.TotalPercentUsed, pu.TotalPercent))),
-		AutoPercent:  clampPercent(numFloat(firstNumber(pu.AutoPercentUsed, pu.AutoPercent))),
-		APIPercent:   clampPercent(numFloat(firstNumber(pu.APIPercentUsed, pu.APIPercent))),
-		SpendCents:   numInt(firstNumber(pu.TotalSpend, pu.Spend, pu.IncludedSpend)),
-		LimitCents:   numInt(pu.Limit),
+		TotalPercent:       clampPercent(numFloat(firstNumber(pu.TotalPercentUsed, pu.TotalPercent))),
+		AutoPercent:        clampPercent(numFloat(firstNumber(pu.AutoPercentUsed, pu.AutoPercent))),
+		APIPercent:         clampPercent(numFloat(firstNumber(pu.APIPercentUsed, pu.APIPercent))),
+		SpendCents:         totalSpend,
+		IncludedSpendCents: included,
+		BonusSpendCents:    bonus,
+		LimitCents:         numInt(pu.Limit),
+		RemainingCents:     numInt(pu.Remaining),
+		OnDemand:           parseOnDemand(firstSpendLimit(wire.SpendLimitUsage, wire.SpendLimitAlt)),
 	}
 	if t, ok := parseTime(wire.BillingCycleStart); ok {
 		out.CycleStart = &t
@@ -364,18 +422,96 @@ func parsePeriodUsage(raw []byte) (PeriodUsage, error) {
 	return out, nil
 }
 
+func firstSpendLimit(a, b *spendLimitWire) *spendLimitWire {
+	if a != nil {
+		return a
+	}
+	return b
+}
+
+// parseOnDemand lit spendLimitUsage. Limite : pooled si limitType=team (ou
+// pooledLimit > 0 et pas "user"), sinon individualLimit.
+// Retourne nil si aucune dépense ni limite (rien à afficher).
+func parseOnDemand(slu *spendLimitWire) *OnDemandUsage {
+	if slu == nil {
+		return nil
+	}
+	limitType := strings.ToLower(strings.TrimSpace(slu.LimitType))
+	pooledLimit := numInt(slu.PooledLimit)
+	indivLimit := numInt(slu.IndividualLimit)
+
+	usePooled := limitType == "team" || (limitType != "user" && pooledLimit > 0)
+
+	var limit, remaining, usedFallback int64
+	if usePooled {
+		limit = pooledLimit
+		remaining = numInt(slu.PooledRemaining)
+		usedFallback = numInt(slu.PooledUsed)
+		if limitType == "" {
+			limitType = "team"
+		}
+	} else {
+		limit = indivLimit
+		remaining = numInt(slu.IndividualRemaining)
+		usedFallback = numInt(slu.IndividualUsed)
+		if limitType == "" && indivLimit > 0 {
+			limitType = "user"
+		}
+	}
+
+	spend := numInt(slu.TotalSpend)
+	if !hasNumber(slu.TotalSpend) {
+		spend = usedFallback
+	}
+
+	if spend == 0 && limit == 0 {
+		return nil
+	}
+
+	out := &OnDemandUsage{
+		SpendCents:     spend,
+		LimitCents:     limit,
+		RemainingCents: remaining,
+		LimitType:      limitType,
+	}
+	if limit > 0 {
+		out.Percent = clampPercent(float64(spend) * 100 / float64(limit))
+	}
+	return out
+}
+
+func hasNumber(n json.Number) bool {
+	return strings.TrimSpace(n.String()) != ""
+}
+
+type planInfoParsed struct {
+	PlanName            string
+	IncludedAmountCents int64
+	Price               string
+}
+
 type planInfoWire struct {
 	PlanInfo *struct {
-		PlanName string `json:"planName"`
+		PlanName            string      `json:"planName"`
+		IncludedAmountCents json.Number `json:"includedAmountCents"`
+		Price               string      `json:"price"`
 	} `json:"planInfo"`
 }
 
-func parsePlanName(raw []byte) string {
+func parsePlanInfo(raw []byte) planInfoParsed {
 	var wire planInfoWire
 	if err := json.Unmarshal(raw, &wire); err != nil || wire.PlanInfo == nil {
-		return ""
+		return planInfoParsed{}
 	}
-	return strings.TrimSpace(wire.PlanInfo.PlanName)
+	return planInfoParsed{
+		PlanName:            strings.TrimSpace(wire.PlanInfo.PlanName),
+		IncludedAmountCents: numInt(wire.PlanInfo.IncludedAmountCents),
+		Price:               strings.TrimSpace(wire.PlanInfo.Price),
+	}
+}
+
+func parsePlanName(raw []byte) string {
+	return parsePlanInfo(raw).PlanName
 }
 
 type grokUsageWire struct {

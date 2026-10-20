@@ -77,10 +77,20 @@ func newCursorServer(t *testing.T) *cursorServer {
 				"autoPercentUsed":30,
 				"apiPercentUsed":12.5,
 				"totalSpend":4250,
+				"includedSpend":4250,
+				"bonusSpend":0,
+				"remaining":5750,
 				"limit":10000
+			},
+			"spendLimitUsage":{
+				"totalSpend":1500,
+				"individualLimit":5000,
+				"individualUsed":1500,
+				"individualRemaining":3500,
+				"limitType":"user"
 			}
 		}`,
-		planBody: `{"planInfo":{"planName":"Pro"}}`,
+		planBody: `{"planInfo":{"planName":"Pro","includedAmountCents":10000,"price":"$20/mo"}}`,
 		sandBody: `{
 			"usagePercent":18.5,
 			"hasNonZeroIncludedLimit":true,
@@ -223,6 +233,21 @@ func TestFetchStatusOK(t *testing.T) {
 	}
 	if st.Period.SpendCents != 4250 || st.Period.LimitCents != 10000 {
 		t.Errorf("spend/limit = %d/%d", st.Period.SpendCents, st.Period.LimitCents)
+	}
+	if st.Period.IncludedSpendCents != 4250 || st.Period.RemainingCents != 5750 {
+		t.Errorf("included/remaining = %d/%d", st.Period.IncludedSpendCents, st.Period.RemainingCents)
+	}
+	if st.Period.OnDemand == nil {
+		t.Fatal("OnDemand nil")
+	}
+	if st.Period.OnDemand.SpendCents != 1500 || st.Period.OnDemand.LimitCents != 5000 {
+		t.Errorf("OnDemand spend/limit = %d/%d", st.Period.OnDemand.SpendCents, st.Period.OnDemand.LimitCents)
+	}
+	if st.Period.OnDemand.Percent != 30 {
+		t.Errorf("OnDemand.Percent = %v, want 30", st.Period.OnDemand.Percent)
+	}
+	if st.Period.OnDemand.LimitType != "user" {
+		t.Errorf("OnDemand.LimitType = %q", st.Period.OnDemand.LimitType)
 	}
 	if st.Period.CycleEnd == nil || st.Period.CycleEnd.UTC().Format("2006-01-02") != "2026-10-01" {
 		t.Errorf("CycleEnd = %v", st.Period.CycleEnd)
@@ -757,5 +782,93 @@ func TestFetcherEnabledWithAPIKey(t *testing.T) {
 	}
 	if srv.exchangeCalls < 1 {
 		t.Error("expected exchange via fetcher")
+	}
+}
+
+func TestParseOnDemandTeamPooled(t *testing.T) {
+	raw := []byte(`{
+		"billingCycleStart":"2026-09-01T00:00:00Z",
+		"billingCycleEnd":"2026-10-01T00:00:00Z",
+		"planUsage":{"totalPercentUsed":10,"includedSpend":100,"limit":1000,"totalSpend":100},
+		"spendLimitUsage":{
+			"totalSpend":447,
+			"pooledLimit":"2000",
+			"pooledUsed":447,
+			"pooledRemaining":1553,
+			"individualLimit":0,
+			"limitType":"team"
+		}
+	}`)
+	p, err := parsePeriodUsage(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.OnDemand == nil {
+		t.Fatal("OnDemand nil")
+	}
+	if p.OnDemand.SpendCents != 447 || p.OnDemand.LimitCents != 2000 {
+		t.Errorf("OnDemand = %+v", p.OnDemand)
+	}
+	if p.OnDemand.LimitType != "team" {
+		t.Errorf("LimitType = %q", p.OnDemand.LimitType)
+	}
+	wantPct := 447.0 * 100 / 2000
+	if p.OnDemand.Percent != wantPct {
+		t.Errorf("Percent = %v, want %v", p.OnDemand.Percent, wantPct)
+	}
+}
+
+func TestParseOnDemandAbsentWhenZero(t *testing.T) {
+	raw := []byte(`{
+		"planUsage":{"totalPercentUsed":5,"includedSpend":50,"limit":1000,"totalSpend":50},
+		"spendLimitUsage":{"totalSpend":0,"individualLimit":0,"pooledLimit":0,"limitType":"user"}
+	}`)
+	p, err := parsePeriodUsage(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.OnDemand != nil {
+		t.Errorf("OnDemand = %+v, want nil when spend and limit are 0", p.OnDemand)
+	}
+}
+
+func TestParseOnDemandSpendWithoutLimit(t *testing.T) {
+	raw := []byte(`{
+		"planUsage":{"totalPercentUsed":100,"includedSpend":1000,"limit":1000,"totalSpend":1000},
+		"spendLimitUsage":{"totalSpend":250,"individualLimit":0,"limitType":"user"}
+	}`)
+	p, err := parsePeriodUsage(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.OnDemand == nil || p.OnDemand.SpendCents != 250 {
+		t.Fatalf("OnDemand = %+v", p.OnDemand)
+	}
+	if p.OnDemand.LimitCents != 0 || p.OnDemand.Percent != 0 {
+		t.Errorf("limit/percent should be unset: %+v", p.OnDemand)
+	}
+}
+
+func TestPlanInfoIncludedAmountFallback(t *testing.T) {
+	srv := newCursorServer(t)
+	srv.periodBody = `{
+		"billingCycleStart":"2026-09-01T00:00:00Z",
+		"billingCycleEnd":"2026-10-01T00:00:00Z",
+		"planUsage":{"totalPercentUsed":50,"includedSpend":20000,"totalSpend":20000}
+	}`
+	srv.planBody = `{"planInfo":{"planName":"Ultra","includedAmountCents":40000,"price":"$200/mo"}}`
+	c := srv.client(t, "refresh-secret", "")
+	st, err := c.FetchStatus()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.PlanName != "Ultra" {
+		t.Errorf("PlanName = %q", st.PlanName)
+	}
+	if st.Period.LimitCents != 40000 {
+		t.Errorf("LimitCents = %d (want GetPlanInfo.includedAmountCents fallback)", st.Period.LimitCents)
+	}
+	if st.Period.IncludedSpendCents != 20000 {
+		t.Errorf("IncludedSpendCents = %d", st.Period.IncludedSpendCents)
 	}
 }
