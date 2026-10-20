@@ -398,6 +398,57 @@
     </div>
   {{end}}
 
+  {{/* ---------------- Cursor + Grok Bot (hors lot OpenCode) ---------------- */}}
+  {{if .Cursor}}
+    {{$c := .Cursor}}
+    <div class="devin-section">
+      <div class="agent-card{{if $c.Status.Error}} error{{end}}">
+        <div class="agent-header">
+          <h3>Cursor{{with $c.Status.PlanName}} — {{.}}{{end}} <span class="badge-plain">hors lot OpenCode</span></h3>
+          {{if $c.Status.Error}}
+            <span class="badge red"><span class="dot-sm red"></span>injoignable</span>
+          {{else}}
+            <span class="badge green"><span class="dot-sm green"></span>ok</span>
+          {{end}}
+        </div>
+
+        {{if $c.Status.Error}}
+          <div class="error-msg">{{$c.Status.Error}}</div>
+        {{else}}
+          {{range $c.Bars}}
+            <div class="window">
+              <div class="window-header">
+                <span class="window-label">{{.Name}}</span>
+                <span class="window-pct {{.Level}}">{{.Percent}}%</span>
+              </div>
+              <div class="bar-track">
+                <div class="bar-fill {{.Level}}" style="width: {{clamp .Percent}}%"></div>
+              </div>
+              <div class="lines">
+                {{if .Detail}}
+                  <div class="line">
+                    <span class="num">{{.Detail}}</span>
+                  </div>
+                {{end}}
+                {{if not .ResetsAt.IsZero}}
+                  <div class="line muted">
+                    <span class="num">reset {{fmtDate .ResetsAt}}</span>
+                    <span class="num">dans {{fmtDur .ResetIn}}</span>
+                  </div>
+                {{end}}
+              </div>
+            </div>
+          {{end}}
+          {{if $c.Status.GrokError}}
+            <div class="error-msg">Grok Bot : {{$c.Status.GrokError}}</div>
+          {{end}}
+        {{end}}
+
+        <div class="fetch-time">relevé {{fmtTime $c.Status.FetchedAt}}</div>
+      </div>
+    </div>
+  {{end}}
+
   <div class="legend">
     <h4>Comment lire les couleurs</h4>
     <ul>

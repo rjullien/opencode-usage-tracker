@@ -18,6 +18,7 @@ import (
 	// depends on it, rather than in main.
 	_ "time/tzdata"
 
+	"github.com/rjullien/opencode-usage-tracker/internal/cursor"
 	"github.com/rjullien/opencode-usage-tracker/internal/devin"
 	"github.com/rjullien/opencode-usage-tracker/internal/opencode"
 )
@@ -60,12 +61,20 @@ type DevinSource interface {
 	Statuses() *devin.Status
 }
 
+// CursorSource supplies Cursor + Grok Bot usage. OPTIONAL like Devin: nil /
+// Statuses()==nil omits the section. Auth or fetch failures must never disturb
+// OpenCode or Devin rendering.
+type CursorSource interface {
+	Statuses() *cursor.Status
+}
+
 // Handler serves the dashboard and API.
 type Handler struct {
 	tmpl    *template.Template
 	poller  Poller
 	weights WeightsSource
 	devin   DevinSource
+	cursor  CursorSource
 
 	// now is injectable so the rendered budget can be asserted deterministically.
 	now func() time.Time
@@ -73,8 +82,8 @@ type Handler struct {
 
 // New creates a Handler with embedded templates. weights may be nil: the
 // dashboard degrades to "poids inconnu" when no Bifrost source is wired.
-// devin may also be nil: the Devin section is then omitted entirely.
-func New(poller Poller, weights WeightsSource, devin DevinSource) *Handler {
+// dest / cursor may also be nil: those sections are then omitted entirely.
+func New(poller Poller, weights WeightsSource, dest DevinSource, cur CursorSource) *Handler {
 	funcMap := template.FuncMap{
 		"levelLabel": levelLabel,
 		"fmtTime":    fmtTime,
@@ -88,6 +97,7 @@ func New(poller Poller, weights WeightsSource, devin DevinSource) *Handler {
 		"weightText": weightText,
 		"weightZero": weightZero,
 		"fmtACU":     fmtACU,
+		"fmtUSD":     fmtUSD,
 		"lastDays":   lastDays,
 		"productACU": productACU,
 	}
@@ -96,7 +106,7 @@ func New(poller Poller, weights WeightsSource, devin DevinSource) *Handler {
 		template.New("").Funcs(funcMap).ParseFS(templatesFS, "templates/*.html"),
 	)
 
-	return &Handler{tmpl: tmpl, poller: poller, weights: weights, devin: devin, now: time.Now}
+	return &Handler{tmpl: tmpl, poller: poller, weights: weights, devin: dest, cursor: cur, now: time.Now}
 }
 
 // WindowView is a quota window plus its budget position. JSON field names match
@@ -153,6 +163,7 @@ type DashboardData struct {
 	Agents   []AgentView
 	Pool     PoolView
 	Devin    *DevinView
+	Cursor   *CursorView
 	Now      time.Time
 	KeyCount int
 }
@@ -245,7 +256,56 @@ func nextResetDay(now time.Time) time.Time {
 	return end
 }
 
-func buildDashboardData(statuses []opencode.AgentStatus, weights map[string]float64, devSrc DevinSource, now time.Time) DashboardData {
+
+// CursorView is the Cursor + Grok Bot section, outside the OpenCode pool. nil
+// when no CURSOR_REFRESH_TOKEN is configured.
+type CursorView struct {
+	Status cursor.Status
+	Bars   []CursorBar
+}
+
+// CursorBar is one usage bar (Total / Auto / API / Grok Bot).
+type CursorBar struct {
+	Name     string
+	Percent  int
+	Level    opencode.Level
+	ResetsAt time.Time
+	ResetIn  time.Duration
+	Detail   string
+}
+
+func buildCursorView(s *cursor.Status, now time.Time) *CursorView {
+	if s == nil {
+		return nil
+	}
+	v := &CursorView{Status: *s}
+	if s.Error != "" || s.Period == nil {
+		return v
+	}
+	p := s.Period
+	spend := ""
+	if p.LimitCents > 0 || p.SpendCents > 0 {
+		spend = fmtUSD(p.SpendCents) + " / " + fmtUSD(p.LimitCents)
+	}
+	add := func(name string, pct float64, reset *time.Time, detail string) {
+		ip := int(pct + 0.5)
+		b := CursorBar{Name: name, Percent: ip, Level: opencode.AbsoluteLevel(ip), Detail: detail}
+		if reset != nil {
+			b.ResetsAt = *reset
+			b.ResetIn = resetIn(b.ResetsAt, now)
+		}
+		v.Bars = append(v.Bars, b)
+	}
+	add("Total", p.TotalPercent, p.CycleEnd, spend)
+	add("Auto", p.AutoPercent, p.CycleEnd, "")
+	add("API", p.APIPercent, p.CycleEnd, "")
+	if s.Grok != nil {
+		add("Grok Bot", s.Grok.UsagePercent, s.Grok.ResetsAt, "hebdomadaire")
+	}
+	return v
+}
+
+func buildDashboardData(statuses []opencode.AgentStatus, weights map[string]float64, devSrc DevinSource, curSrc CursorSource, now time.Time) DashboardData {
 	agents := make([]AgentView, 0, len(statuses))
 
 	for _, s := range statuses {
@@ -296,6 +356,7 @@ func buildDashboardData(statuses []opencode.AgentStatus, weights map[string]floa
 		Agents:   agents,
 		Pool:     buildPool(agents),
 		Devin:    buildDevinView(statusesDev(devSrc), now),
+		Cursor:   buildCursorView(statusesCursor(curSrc), now),
 		Now:      now,
 		KeyCount: len(agents),
 	}
@@ -303,6 +364,13 @@ func buildDashboardData(statuses []opencode.AgentStatus, weights map[string]floa
 
 // statusesDev extrait le statut Devin de la source optionnelle.
 func statusesDev(s DevinSource) *devin.Status {
+	if s == nil {
+		return nil
+	}
+	return s.Statuses()
+}
+
+func statusesCursor(s CursorSource) *cursor.Status {
 	if s == nil {
 		return nil
 	}
@@ -389,7 +457,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.devin, h.now())
+	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.devin, h.cursor, h.now())
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.tmpl.ExecuteTemplate(w, "dashboard.html", data); err != nil {
@@ -399,7 +467,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 
 // APIUsage returns JSON usage data, enriched with the budget position.
 func (h *Handler) APIUsage(w http.ResponseWriter, r *http.Request) {
-	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.devin, h.now())
+	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.devin, h.cursor, h.now())
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -425,6 +493,24 @@ func (h *Handler) APIDevin(w http.ResponseWriter, r *http.Request) {
 }
 
 // Health returns 200 OK.
+// APICursor returns Cursor + Grok Bot status as JSON.
+// 404 when no refresh token is configured, 200 with JSON otherwise.
+func (h *Handler) APICursor(w http.ResponseWriter, r *http.Request) {
+	if h.cursor == nil {
+		http.NotFound(w, r)
+		return
+	}
+	s := h.cursor.Statuses()
+	if s == nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	enc.Encode(s)
+}
+
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok"}`))
@@ -567,6 +653,16 @@ func fmtACU(v float64) string {
 		return strconv.FormatInt(int64(v), 10)
 	}
 	return strings.Replace(strconv.FormatFloat(v, 'f', 1, 64), ".", ",", 1)
+}
+
+// fmtUSD renders cents as "12,50 $" (French decimal comma).
+func fmtUSD(cents int64) string {
+	sign := ""
+	if cents < 0 {
+		sign = "-"
+		cents = -cents
+	}
+	return fmt.Sprintf("%s%d,%02d $", sign, cents/100, cents%100)
 }
 
 // lastDays renvoie les jours de consommation ACU triés du plus récent au plus

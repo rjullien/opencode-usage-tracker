@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/rjullien/opencode-usage-tracker/internal/cursor"
 	"github.com/rjullien/opencode-usage-tracker/internal/devin"
 	"github.com/rjullien/opencode-usage-tracker/internal/opencode"
 )
@@ -74,7 +75,7 @@ func newTestHandler(t *testing.T) *Handler {
 		"OPENCODE_GO_API_KEY_A": 0,
 		"OPENCODE_GO_API_KEY_N": 1,
 		"OPENCODE_GO_API_KEY_R": 1,
-	}, nil) // pas de source Devin dans les tests OpenCode existants
+	}, nil, nil) // pas de source Devin/Cursor dans les tests OpenCode existants
 	h.now = func() time.Time { return captureNow }
 	return h
 }
@@ -479,7 +480,7 @@ func devinStatusOK() *devin.Status {
 }
 
 func TestDashboardWithDevinSection(t *testing.T) {
-	h := New(stubPoller{}, nil, stubDevin{s: devinStatusOK()})
+	h := New(stubPoller{}, nil, stubDevin{s: devinStatusOK()}, nil)
 	body := renderDashboard(t, h)
 
 	mustContain(t, body,
@@ -513,7 +514,7 @@ func TestDashboardDevinErrorRendered(t *testing.T) {
 		"vérifier DEVIN_API_KEY (longueur et empreinte SHA-256 de la clé envoyée dans les logs du pod)"
 	h := New(emptyPoller{}, nil, stubDevin{
 		s: &devin.Status{Error: msg, FetchedAt: captureNow},
-	})
+	}, nil)
 	body := renderDashboard(t, h)
 
 	mustContain(t, body, "injoignable", "token Devin refusé (HTTP 401)", "vérifier DEVIN_API_KEY")
@@ -525,7 +526,7 @@ func TestDashboardDevinErrorRendered(t *testing.T) {
 }
 
 func TestAPIDevin(t *testing.T) {
-	h := New(emptyPoller{}, nil, stubDevin{s: devinStatusOK()})
+	h := New(emptyPoller{}, nil, stubDevin{s: devinStatusOK()}, nil)
 	rec := httptest.NewRecorder()
 	h.APIDevin(rec, httptest.NewRequest(http.MethodGet, "/api/devin", nil))
 
@@ -544,7 +545,7 @@ func TestAPIDevin(t *testing.T) {
 // Les bornes du cycle interrogé font partie du contrat de /api/devin : sans
 // elles, un consommateur ne peut pas savoir de quelle période parle le total.
 func TestAPIDevinExposeLesBornesDuCycle(t *testing.T) {
-	h := New(emptyPoller{}, nil, stubDevin{s: devinStatusOK()})
+	h := New(emptyPoller{}, nil, stubDevin{s: devinStatusOK()}, nil)
 	rec := httptest.NewRecorder()
 	h.APIDevin(rec, httptest.NewRequest(http.MethodGet, "/api/devin", nil))
 
@@ -568,7 +569,7 @@ func TestAPIDevinExposeLesBornesDuCycle(t *testing.T) {
 func TestAPIDevinOmetLesBornesSurStatutEnErreur(t *testing.T) {
 	h := New(emptyPoller{}, nil, stubDevin{
 		s: &devin.Status{Error: "organisation Devin org-x inaccessible (HTTP 404)", FetchedAt: captureNow},
-	})
+	}, nil)
 	rec := httptest.NewRecorder()
 	h.APIDevin(rec, httptest.NewRequest(http.MethodGet, "/api/devin", nil))
 
@@ -615,7 +616,7 @@ func TestDashboardDevinAfficheLaFenetreDuCycle(t *testing.T) {
 	// celles-là, pas un recalcul qui pourrait en diverger.
 	s := devinStatusPourCycle(mustTime("2026-09-05T08:00:00Z"), mustTime("2026-10-05T08:00:00Z"))
 
-	h := New(emptyPoller{}, nil, stubDevin{s: s})
+	h := New(emptyPoller{}, nil, stubDevin{s: s}, nil)
 	h.now = func() time.Time { return mustTime("2026-09-20T12:00:00Z") }
 	body := renderDashboard(t, h)
 
@@ -650,5 +651,108 @@ func TestNextResetDay(t *testing.T) {
 	after := mustTime("2026-09-05T09:00:00Z")
 	if got := nextResetDay(after); got.Day() != 5 || got.Month() != time.October {
 		t.Errorf("nextResetDay(05/09 09:00) = %v, want 05/10", got)
+	}
+}
+
+// ---- Cursor + Grok Bot : section optionnelle, séparée du lot OpenCode ----
+
+type stubCursor struct{ s *cursor.Status }
+
+func (st stubCursor) Statuses() *cursor.Status { return st.s }
+
+func cursorStatusOK() *cursor.Status {
+	cycleEnd := mustTime("2026-10-01T00:00:00Z")
+	grokReset := mustTime("2026-09-19T00:00:00Z")
+	return &cursor.Status{
+		PlanName:  "Pro",
+		FetchedAt: captureNow,
+		Period: &cursor.PeriodUsage{
+			TotalPercent: 42.5,
+			AutoPercent:  30,
+			APIPercent:   12.5,
+			SpendCents:   4250,
+			LimitCents:   10000,
+			CycleEnd:     &cycleEnd,
+		},
+		Grok: &cursor.GrokUsage{
+			UsagePercent: 18.5,
+			ResetsAt:     &grokReset,
+		},
+	}
+}
+
+func TestDashboardWithCursorSection(t *testing.T) {
+	h := New(emptyPoller{}, nil, nil, stubCursor{s: cursorStatusOK()})
+	body := renderDashboard(t, h)
+
+	mustContain(t, body,
+		"Cursor — Pro",
+		"hors lot OpenCode",
+		"Total",
+		"43%", // 42.5 rounded
+		"42,50 $ / 100,00 $",
+		"Auto",
+		"API",
+		"Grok Bot",
+		"19%", // 18.5 rounded
+		"hebdomadaire",
+	)
+}
+
+func TestDashboardCursorAbsentWithoutSource(t *testing.T) {
+	h := newTestHandler(t) // nil cursor
+	body := renderDashboard(t, h)
+	if strings.Contains(body, "Cursor —") || strings.Contains(body, "Grok Bot") {
+		t.Error("section Cursor présente alors qu'aucune source n'est câblée")
+	}
+}
+
+func TestDashboardCursorAuthErrorRendered(t *testing.T) {
+	const msg = "authentification Cursor révoquée (shouldLogout) : renouveler CURSOR_REFRESH_TOKEN " +
+		"(SQLite cursorAuth/refreshToken ou `agent login`) et mettre à jour Infisical"
+	h := New(emptyPoller{}, nil, nil, stubCursor{
+		s: &cursor.Status{Error: msg, FetchedAt: captureNow},
+	})
+	body := renderDashboard(t, h)
+	mustContain(t, body, "injoignable", "shouldLogout", "CURSOR_REFRESH_TOKEN")
+}
+
+func TestDashboardCursorGrokSoftErrorKeepsPeriod(t *testing.T) {
+	s := cursorStatusOK()
+	s.Grok = nil
+	s.GrokError = "GetSandUsageStatus HTTP 500"
+	h := New(emptyPoller{}, nil, nil, stubCursor{s: s})
+	body := renderDashboard(t, h)
+	mustContain(t, body, "Total", "43%", "Grok Bot : GetSandUsageStatus HTTP 500")
+	if strings.Contains(body, "hebdomadaire") {
+		t.Error("barre Grok présente malgré l'erreur soft")
+	}
+}
+
+func TestAPICursor(t *testing.T) {
+	h := New(emptyPoller{}, nil, nil, stubCursor{s: cursorStatusOK()})
+	rec := httptest.NewRecorder()
+	h.APICursor(rec, httptest.NewRequest(http.MethodGet, "/api/cursor", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var got cursor.Status
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.PlanName != "Pro" || got.Period == nil || got.Period.TotalPercent != 42.5 {
+		t.Errorf("got %+v", got)
+	}
+	if got.Grok == nil || got.Grok.UsagePercent != 18.5 {
+		t.Errorf("Grok = %+v", got.Grok)
+	}
+}
+
+func TestAPICursorNotFoundWithoutSource(t *testing.T) {
+	h := New(emptyPoller{}, nil, nil, nil)
+	rec := httptest.NewRecorder()
+	h.APICursor(rec, httptest.NewRequest(http.MethodGet, "/api/cursor", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
