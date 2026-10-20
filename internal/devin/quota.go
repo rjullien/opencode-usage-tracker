@@ -51,8 +51,19 @@ type Quota struct {
 	WeeklyUsedPercent *float64   `json:"weeklyUsedPercent,omitempty"`
 	WeeklyResetsAt    *time.Time `json:"weeklyResetsAt,omitempty"`
 
+	// PlanStart / PlanEnd : bornes du cycle de facturation courant, lues dans
+	// GetUserStatus (planStatus). Vérifiées en prod le 20/10/2026 : ce sont
+	// les vraies bornes facturées, à préférer à tout recalcul local.
 	PlanStart *time.Time `json:"planStart,omitempty"`
 	PlanEnd   *time.Time `json:"planEnd,omitempty"`
+
+	// OnDemandBalanceUSD : solde restant hors forfait (pay-as-you-go),
+	// converti depuis overageBalanceMicros (millionièmes de $). nil si absent.
+	OnDemandBalanceUSD *float64 `json:"onDemandBalanceUSD,omitempty"`
+
+	// BillingStrategy : ex "BILLING_STRATEGY_QUOTA" (plan Pro : la conso se
+	// compte en quotas + $, d'où un consumption/daily REST vide).
+	BillingStrategy string `json:"billingStrategy,omitempty"`
 }
 
 // seatUserStatusResponse est le sous-ensemble utile de GetUserStatus.
@@ -70,11 +81,13 @@ type seatPlanStatus struct {
 	WeeklyQuotaRemainingPercent *float64     `json:"weeklyQuotaRemainingPercent"`
 	DailyQuotaResetAtUnix       json.Number  `json:"dailyQuotaResetAtUnix"`
 	WeeklyQuotaResetAtUnix      json.Number  `json:"weeklyQuotaResetAtUnix"`
+	OverageBalanceMicros        json.Number  `json:"overageBalanceMicros"`
 }
 
 type seatPlanInfo struct {
-	PlanName       string `json:"planName"`
-	HideDailyQuota bool   `json:"hideDailyQuota"`
+	PlanName        string `json:"planName"`
+	HideDailyQuota  bool   `json:"hideDailyQuota"`
+	BillingStrategy string `json:"billingStrategy"`
 }
 
 type seatRequestBody struct {
@@ -146,7 +159,10 @@ func parseQuota(raw []byte) (Quota, error) {
 		return Quota{}, fmt.Errorf("GetUserStatus: planStatus vide")
 	}
 
-	q := Quota{PlanName: strings.TrimSpace(ps.PlanInfo.PlanName)}
+	q := Quota{
+		PlanName:        strings.TrimSpace(ps.PlanInfo.PlanName),
+		BillingStrategy: strings.TrimSpace(ps.PlanInfo.BillingStrategy),
+	}
 	if t, ok := parseRFC3339(ps.PlanStart); ok {
 		q.PlanStart = &t
 	}
@@ -169,7 +185,27 @@ func parseQuota(raw []byte) (Quota, error) {
 		q.WeeklyUsedPercent = &used
 	}
 
+	// Solde hors forfait : la réponse porte des millionièmes de $, en string
+	// ("623376568") comme les compteurs Unix voisins.
+	if usd, ok := microsUSD(ps.OverageBalanceMicros); ok {
+		q.OnDemandBalanceUSD = &usd
+	}
+
 	return q, nil
+}
+
+// microsUSD convertit un montant en millionièmes de $ (JSON number ou string)
+// en dollars. false si absent ou non parsable.
+func microsUSD(n json.Number) (float64, bool) {
+	s := strings.TrimSpace(n.String())
+	if s == "" {
+		return 0, false
+	}
+	micros, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return float64(micros) / 1_000_000, true
 }
 
 func parseRFC3339(s string) (time.Time, bool) {

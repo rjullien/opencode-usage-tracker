@@ -98,6 +98,7 @@ func New(poller Poller, weights WeightsSource, dest DevinSource, cur CursorSourc
 		"weightZero": weightZero,
 		"fmtACU":     fmtACU,
 		"fmtUSD":     fmtUSD,
+		"fmtUSDf":    fmtUSDf,
 		"lastDays":   lastDays,
 		"productACU": productACU,
 		"levelOf":    func(pct int) opencode.Level { return opencode.AbsoluteLevel(pct) },
@@ -737,6 +738,11 @@ func fmtUSD(cents int64) string {
 		cents = -cents
 	}
 	return fmt.Sprintf("%s%d,%02d $", sign, cents/100, cents%100)
+}
+
+// fmtUSDf renders a dollar amount already in dollars (solde Devin) via fmtUSD.
+func fmtUSDf(v float64) string {
+	return fmtUSD(int64(v*100 + 0.5))
 }
 
 // lastDays renvoie les jours de consommation ACU triés du plus récent au plus

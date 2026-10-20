@@ -362,6 +362,22 @@
             <div class="error-msg">quotas : {{$d.Status.QuotaError}}</div>
           {{end}}
 
+          {{with $d.Status.Quota}}
+            {{if .OnDemandBalanceUSD}}
+              <div class="window">
+                <div class="window-header">
+                  <span class="window-label">Hors forfait (on-demand)</span>
+                  <span class="window-pct green">{{fmtUSDf .OnDemandBalanceUSD}}</span>
+                </div>
+                <div class="lines">
+                  <div class="line muted">
+                    <span class="num">solde restant · pay-as-you-go au-delà des quotas</span>
+                  </div>
+                </div>
+              </div>
+            {{end}}
+          {{end}}
+
           <div class="window lead">
             <div class="window-header">
               <span class="window-label">ACU consommés</span>
@@ -389,6 +405,11 @@
                 <span class="num">reset budget ACU</span>
                 <span class="num">{{fmtDate $d.ResetAt}}</span>
               </div>
+              {{if and $d.Status.Quota (eq $d.Status.Quota.BillingStrategy "BILLING_STRATEGY_QUOTA")}}
+                <div class="line muted">
+                  <span class="num">facturation quotas : la conso se compte en quotas + $, pas en ACU</span>
+                </div>
+              {{end}}
             </div>
           </div>
         {{end}}
