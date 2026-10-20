@@ -100,6 +100,7 @@ func New(poller Poller, weights WeightsSource, dest DevinSource, cur CursorSourc
 		"fmtUSD":     fmtUSD,
 		"lastDays":   lastDays,
 		"productACU": productACU,
+		"levelOf":    func(pct int) opencode.Level { return opencode.AbsoluteLevel(pct) },
 	}
 
 	tmpl := template.Must(
@@ -262,6 +263,26 @@ func nextResetDay(now time.Time) time.Time {
 type CursorView struct {
 	Status cursor.Status
 	Bars   []CursorBar
+
+	// Money : montants USD (cents → affichage) pour forfait inclus + hors forfait.
+	Money *CursorMoney
+}
+
+// CursorMoney regroupe les lignes monétaires Cursor (toujours en $).
+type CursorMoney struct {
+	// Forfait inclus (planUsage.includedSpend / limit).
+	IncludedSpend string
+	IncludedLimit string
+	IncludedPct   int
+	HasIncluded   bool
+
+	// Hors forfait / on-demand (spendLimitUsage).
+	OnDemandSpend string
+	OnDemandLimit string // vide si limite inconnue
+	OnDemandPct   int
+	HasOnDemand   bool
+	HasLimit      bool
+	LimitType     string // "user" | "team" (libellé UI)
 }
 
 // CursorBar is one usage bar (Total / Auto / API / Grok Bot).
@@ -283,10 +304,8 @@ func buildCursorView(s *cursor.Status, now time.Time) *CursorView {
 		return v
 	}
 	p := s.Period
-	spend := ""
-	if p.LimitCents > 0 || p.SpendCents > 0 {
-		spend = fmtUSD(p.SpendCents) + " / " + fmtUSD(p.LimitCents)
-	}
+	v.Money = buildCursorMoney(p)
+
 	add := func(name string, pct float64, reset *time.Time, detail string) {
 		ip := int(pct + 0.5)
 		b := CursorBar{Name: name, Percent: ip, Level: opencode.AbsoluteLevel(ip), Detail: detail}
@@ -296,11 +315,66 @@ func buildCursorView(s *cursor.Status, now time.Time) *CursorView {
 		}
 		v.Bars = append(v.Bars, b)
 	}
-	add("Total", p.TotalPercent, p.CycleEnd, spend)
+	// Montants $ : blocs Forfait inclus / Hors forfait (CursorMoney). Les barres
+	// ci-dessous restent les % d'usage (Total / Auto / API / Grok).
+	add("Total", p.TotalPercent, p.CycleEnd, "")
 	add("Auto", p.AutoPercent, p.CycleEnd, "")
 	add("API", p.APIPercent, p.CycleEnd, "")
 	if s.Grok != nil {
 		add("Grok Bot", s.Grok.UsagePercent, s.Grok.ResetsAt, "hebdomadaire")
+	}
+	return v
+}
+
+func buildCursorMoney(p *cursor.PeriodUsage) *CursorMoney {
+	if p == nil {
+		return nil
+	}
+	m := &CursorMoney{}
+
+	includedSpend := p.IncludedSpendCents
+	if includedSpend == 0 {
+		includedSpend = p.SpendCents
+	}
+	if includedSpend > 0 || p.LimitCents > 0 {
+		m.HasIncluded = true
+		m.IncludedSpend = fmtUSD(includedSpend)
+		m.IncludedLimit = fmtUSD(p.LimitCents)
+		if p.LimitCents > 0 {
+			m.IncludedPct = int(clampPct(float64(includedSpend)*100/float64(p.LimitCents)) + 0.5)
+		} else if p.TotalPercent > 0 {
+			m.IncludedPct = int(p.TotalPercent + 0.5)
+		}
+	}
+
+	if od := p.OnDemand; od != nil {
+		m.HasOnDemand = true
+		m.OnDemandSpend = fmtUSD(od.SpendCents)
+		m.HasLimit = od.LimitCents > 0
+		if m.HasLimit {
+			m.OnDemandLimit = fmtUSD(od.LimitCents)
+			m.OnDemandPct = int(od.Percent + 0.5)
+		}
+		switch od.LimitType {
+		case "team":
+			m.LimitType = "équipe"
+		case "user":
+			m.LimitType = "individuelle"
+		}
+	}
+
+	if !m.HasIncluded && !m.HasOnDemand {
+		return nil
+	}
+	return m
+}
+
+func clampPct(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 100 {
+		return 100
 	}
 	return v
 }

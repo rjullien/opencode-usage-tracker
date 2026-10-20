@@ -667,12 +667,21 @@ func cursorStatusOK() *cursor.Status {
 		PlanName:  "Pro",
 		FetchedAt: captureNow,
 		Period: &cursor.PeriodUsage{
-			TotalPercent: 42.5,
-			AutoPercent:  30,
-			APIPercent:   12.5,
-			SpendCents:   4250,
-			LimitCents:   10000,
-			CycleEnd:     &cycleEnd,
+			TotalPercent:       42.5,
+			AutoPercent:        30,
+			APIPercent:         12.5,
+			SpendCents:         4250,
+			IncludedSpendCents: 4250,
+			LimitCents:         10000,
+			RemainingCents:     5750,
+			CycleEnd:           &cycleEnd,
+			OnDemand: &cursor.OnDemandUsage{
+				SpendCents:     1500,
+				LimitCents:     5000,
+				RemainingCents: 3500,
+				Percent:        30,
+				LimitType:      "user",
+			},
 		},
 		Grok: &cursor.GrokUsage{
 			UsagePercent: 18.5,
@@ -688,15 +697,27 @@ func TestDashboardWithCursorSection(t *testing.T) {
 	mustContain(t, body,
 		"Cursor — Pro",
 		"hors lot OpenCode",
+		"Forfait inclus",
+		"42,50 $ / 100,00 $",
+		"Hors forfait",
+		"individuelle",
+		"15,00 $ / 50,00 $",
 		"Total",
 		"43%", // 42.5 rounded
-		"42,50 $ / 100,00 $",
 		"Auto",
 		"API",
 		"Grok Bot",
 		"19%", // 18.5 rounded
 		"hebdomadaire",
 	)
+}
+
+func TestDashboardCursorOnDemandWithoutLimit(t *testing.T) {
+	s := cursorStatusOK()
+	s.Period.OnDemand = &cursor.OnDemandUsage{SpendCents: 250, LimitType: "user"}
+	h := New(emptyPoller{}, nil, nil, stubCursor{s: s})
+	body := renderDashboard(t, h)
+	mustContain(t, body, "Hors forfait", "2,50 $", "limite inconnue")
 }
 
 func TestDashboardCursorAbsentWithoutSource(t *testing.T) {
