@@ -258,7 +258,7 @@ func nextResetDay(now time.Time) time.Time {
 
 
 // CursorView is the Cursor + Grok Bot section, outside the OpenCode pool. nil
-// when no CURSOR_REFRESH_TOKEN is configured.
+// when no CURSOR_API_KEY / CURSOR_REFRESH_TOKEN is configured.
 type CursorView struct {
 	Status cursor.Status
 	Bars   []CursorBar
@@ -494,7 +494,7 @@ func (h *Handler) APIDevin(w http.ResponseWriter, r *http.Request) {
 
 // Health returns 200 OK.
 // APICursor returns Cursor + Grok Bot status as JSON.
-// 404 when no refresh token is configured, 200 with JSON otherwise.
+// 404 when no Cursor credential is configured, 200 with JSON otherwise.
 func (h *Handler) APICursor(w http.ResponseWriter, r *http.Request) {
 	if h.cursor == nil {
 		http.NotFound(w, r)

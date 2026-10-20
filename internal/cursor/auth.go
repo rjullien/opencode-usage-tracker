@@ -13,34 +13,61 @@ import (
 	"time"
 )
 
-// OAuth Cursor — renouvelable, adapté à Infisical.
+// Auth Cursor — deux modes, adaptés à Infisical.
 //
-// Secret durable : CURSOR_REFRESH_TOKEN (SQLite Cursor cursorAuth/refreshToken,
-// ou keychain CLI `agent login` : cursor-refresh-token).
-// Access JWT : mémoire process uniquement, jamais exigé dans Infisical.
+// 1) Clé API utilisateur (canonique) : CURSOR_API_KEY (préfixe crsr_…).
+//    POST https://api2.cursor.sh/auth/exchange_user_api_key
+//    Authorization: Bearer <crsr_…>, body {}
+//    → {accessToken, refreshToken}. L'access JWT (~1 h) sert de Bearer aux
+//    appels DashboardService. Le refreshToken renvoyé ne se renouvelle PAS via
+//    /oauth/token : on re-échange la clé à l'expiration ou sur 401.
 //
-//	POST https://api2.cursor.sh/oauth/token
-//	{"grant_type":"refresh_token","client_id":"…","refresh_token":"…"}
+// 2) Refresh OAuth (historique) : CURSOR_REFRESH_TOKEN (SQLite / `agent login`).
+//    POST https://api2.cursor.sh/oauth/token
+//    {"grant_type":"refresh_token","client_id":"…","refresh_token":"…"}
 //
-// Succès : {access_token, id_token, shouldLogout:false}.
-// Révoqué : shouldLogout:true → erreur d'auth claire, sans faire planter le board.
+// Filet de sécurité : si CURSOR_REFRESH_TOKEN commence par « crsr_ », on le
+// traite comme une clé API (échange), pour un déploiement qui aurait écrasé
+// le secret refresh sans renommer la variable.
 //
-// Cursor ne consomme en général pas le refresh (RFC 6749 §6). Si une réponse
-// porte un nouveau refresh_token, on le préfère en mémoire et on documente
-// qu'Infisical doit être mis à jour.
+// Priorité : CURSOR_API_KEY > CURSOR_REFRESH_TOKEN.
+// Access JWT : mémoire process uniquement. Jamais logué en clair.
 //
 // ⚠️ Endpoints non documentés / non officiels — susceptibles de changer.
 
 const (
-	defaultOAuthURL = "https://api2.cursor.sh/oauth/token"
+	defaultOAuthURL    = "https://api2.cursor.sh/oauth/token"
+	defaultExchangeURL = "https://api2.cursor.sh/auth/exchange_user_api_key"
 	// oauthClientID est le client_id public de l'app Cursor (OpenUsage / OpenQuota / AI-Usage).
 	oauthClientID = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB"
 	// refreshSkew : on renouvelle l'access JWT s'il expire dans moins de 3 min
 	// (fenêtre 2–5 min demandée), ou immédiatement sur 401.
 	refreshSkew = 3 * time.Minute
+
+	apiKeyPrefix = "crsr_"
 )
 
-// AuthError signale un refresh révoqué ou shouldLogout — le dashboard doit
+// authMode distingue l'échange clé API du refresh OAuth.
+type authMode int
+
+const (
+	authModeNone authMode = iota
+	authModeAPIKey
+	authModeRefresh
+)
+
+func (m authMode) String() string {
+	switch m {
+	case authModeAPIKey:
+		return "api_key"
+	case authModeRefresh:
+		return "oauth_refresh"
+	default:
+		return "none"
+	}
+}
+
+// AuthError signale une clé/refresh révoqué ou shouldLogout — le dashboard doit
 // afficher un message d'auth, pas planter.
 type AuthError struct {
 	Msg string
@@ -56,58 +83,109 @@ func IsAuthError(err error) bool {
 
 type tokenBundle struct {
 	access  string
-	refresh string
+	refresh string // OAuth only ; ignoré en mode api_key (re-échange de la clé)
 	exp     time.Time
 }
 
-// authenticator gère le refresh OAuth et le JWT d'accès en mémoire.
+// authenticator gère l'obtention d'un access JWT (échange clé ou OAuth) en mémoire.
 type authenticator struct {
-	http      *http.Client
-	oauthURL  string
-	clientID  string
-	mu        sync.Mutex
-	bundle    tokenBundle
-	now       func() time.Time
-	onRotated func(newRefresh string)
+	http        *http.Client
+	oauthURL    string
+	exchangeURL string
+	clientID    string
+	mode        authMode
+	secretVar   string // nom de la variable réellement utilisée (messages d'erreur)
+	apiKey      string // durable en mode api_key ; jamais remplacé par un refresh échangé
+	mu          sync.Mutex
+	bundle      tokenBundle
+	now         func() time.Time
+	onRotated   func(newRefresh string)
 }
 
-func newAuthenticator(httpClient *http.Client, refreshToken, oauthURL string) *authenticator {
+func newAuthenticator(httpClient *http.Client, cfg Config) *authenticator {
+	oauthURL := cfg.OAuthURL
 	if oauthURL == "" {
 		oauthURL = defaultOAuthURL
 	}
-	return &authenticator{
-		http:     httpClient,
-		oauthURL: oauthURL,
-		clientID: oauthClientID,
-		bundle:   tokenBundle{refresh: strings.TrimSpace(refreshToken)},
-		now:      time.Now,
+	exchangeURL := cfg.ExchangeURL
+	if exchangeURL == "" {
+		exchangeURL = defaultExchangeURL
+	}
+
+	mode, secret, secretVar := cfg.resolveAuth()
+	a := &authenticator{
+		http:        httpClient,
+		oauthURL:    oauthURL,
+		exchangeURL: exchangeURL,
+		clientID:    oauthClientID,
+		mode:        mode,
+		secretVar:   secretVar,
+		now:         time.Now,
 		onRotated: func(newRefresh string) {
 			log.Printf("Cursor: nouveau refresh_token reçu — mettre à jour Infisical (ex. /agents/cursor) ; %s",
 				Fingerprint(newRefresh))
 		},
 	}
+	switch mode {
+	case authModeAPIKey:
+		a.apiKey = secret
+	case authModeRefresh:
+		a.bundle.refresh = secret
+	}
+	return a
 }
 
-// accessToken renvoie un access JWT valide, en refreshant si besoin.
+// accessToken renvoie un access JWT valide, en renouvelant si besoin.
 func (a *authenticator) accessToken() (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	if a.bundle.refresh == "" {
-		return "", &AuthError{Msg: "CURSOR_REFRESH_TOKEN absent"}
+	switch a.mode {
+	case authModeNone:
+		return "", &AuthError{Msg: "aucune credential Cursor (CURSOR_API_KEY ou CURSOR_REFRESH_TOKEN)"}
+	case authModeAPIKey:
+		if a.apiKey == "" {
+			return "", &AuthError{Msg: a.secretVar + " absent"}
+		}
+	case authModeRefresh:
+		if a.bundle.refresh == "" {
+			return "", &AuthError{Msg: a.secretVar + " absent"}
+		}
 	}
+
 	if a.bundle.access != "" && a.now().Add(refreshSkew).Before(a.bundle.exp) {
 		return a.bundle.access, nil
 	}
-	return a.refreshLocked()
+	return a.renewLocked()
 }
 
-// invalidateAccess force un refresh au prochain appel (ex. après 401).
+// invalidateAccess force un renouvellement au prochain appel (ex. après 401).
 func (a *authenticator) invalidateAccess() {
 	a.mu.Lock()
 	a.bundle.access = ""
 	a.bundle.exp = time.Time{}
 	a.mu.Unlock()
+}
+
+// secretFingerprint résume la credential durable (clé API ou refresh), jamais l'access.
+func (a *authenticator) secretFingerprint() string {
+	switch a.mode {
+	case authModeAPIKey:
+		return Fingerprint(a.apiKey)
+	default:
+		return Fingerprint(a.bundle.refresh)
+	}
+}
+
+func (a *authenticator) renewLocked() (string, error) {
+	switch a.mode {
+	case authModeAPIKey:
+		return a.exchangeLocked()
+	case authModeRefresh:
+		return a.refreshLocked()
+	default:
+		return "", &AuthError{Msg: "aucune credential Cursor (CURSOR_API_KEY ou CURSOR_REFRESH_TOKEN)"}
+	}
 }
 
 type oauthResponse struct {
@@ -118,6 +196,100 @@ type oauthResponse struct {
 	ShouldLogoutSnake *bool  `json:"should_logout"`
 	Error             string `json:"error"`
 	ErrorDescription  string `json:"error_description"`
+}
+
+type exchangeResponse struct {
+	AccessToken       string `json:"accessToken"`
+	RefreshToken      string `json:"refreshToken"`
+	AccessTokenSnake  string `json:"access_token"`
+	RefreshTokenSnake string `json:"refresh_token"`
+	ShouldLogout      *bool  `json:"shouldLogout"`
+	ShouldLogoutSnake *bool  `json:"should_logout"`
+	Error             string `json:"error"`
+	ErrorDescription  string `json:"error_description"`
+}
+
+func (e exchangeResponse) access() string {
+	if v := strings.TrimSpace(e.AccessToken); v != "" {
+		return v
+	}
+	return strings.TrimSpace(e.AccessTokenSnake)
+}
+
+func (a *authenticator) exchangeLocked() (string, error) {
+	req, err := http.NewRequest(http.MethodPost, a.exchangeURL, bytes.NewReader([]byte("{}")))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+a.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "opencode-usage-tracker/2.0")
+
+	resp, err := a.http.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("network error (exchange_user_api_key): %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read error (exchange_user_api_key): %w", err)
+	}
+
+	var er exchangeResponse
+	if err := json.Unmarshal(raw, &er); err != nil {
+		return "", fmt.Errorf("JSON parse error (exchange_user_api_key): %w", err)
+	}
+
+	if logoutFlag(er.ShouldLogout, er.ShouldLogoutSnake) {
+		log.Printf("Cursor: shouldLogout=true — %s %s", a.secretVar, Fingerprint(a.apiKey))
+		return "", &AuthError{
+			Msg: fmt.Sprintf(
+				"authentification Cursor révoquée (shouldLogout) : vérifier %s "+
+					"(clé API utilisateur crsr_… dans Cursor Dashboard > API Keys) et Infisical",
+				a.secretVar),
+		}
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		log.Printf("Cursor: exchange refusé (HTTP %d) — %s %s", resp.StatusCode, a.secretVar, Fingerprint(a.apiKey))
+		return "", &AuthError{
+			Msg: fmt.Sprintf(
+				"clé API Cursor refusée (HTTP %d) : %s invalide ou révoquée — "+
+					"régénérer dans Cursor Dashboard > API Keys et mettre à jour Infisical "+
+					"(longueur et empreinte SHA-256 dans les logs du pod)",
+				resp.StatusCode, a.secretVar),
+		}
+	}
+	if resp.StatusCode != http.StatusOK {
+		detail := er.Error
+		if er.ErrorDescription != "" {
+			detail = er.Error + ": " + er.ErrorDescription
+		}
+		if detail == "" {
+			detail = truncate(string(raw), 200)
+		}
+		return "", fmt.Errorf("exchange_user_api_key HTTP %d: %s", resp.StatusCode, detail)
+	}
+
+	access := er.access()
+	if access == "" {
+		return "", &AuthError{
+			Msg: fmt.Sprintf("exchange_user_api_key: accessToken absent — vérifier %s", a.secretVar),
+		}
+	}
+
+	// Le refreshToken renvoyé par l'échange n'est PAS utilisable via /oauth/token :
+	// on l'ignore volontairement et on re-échangera la clé durable.
+	exp, ok := jwtExp(access)
+	if !ok {
+		exp = a.now().Add(refreshSkew)
+	}
+
+	a.bundle.access = access
+	a.bundle.exp = exp
+	return access, nil
 }
 
 func (a *authenticator) refreshLocked() (string, error) {
@@ -154,21 +326,23 @@ func (a *authenticator) refreshLocked() (string, error) {
 		return "", fmt.Errorf("JSON parse error (oauth/token): %w", err)
 	}
 
-	if or.logout() {
-		log.Printf("Cursor: shouldLogout=true — CURSOR_REFRESH_TOKEN %s", Fingerprint(a.bundle.refresh))
+	if logoutFlag(or.ShouldLogout, or.ShouldLogoutSnake) {
+		log.Printf("Cursor: shouldLogout=true — %s %s", a.secretVar, Fingerprint(a.bundle.refresh))
 		return "", &AuthError{
-			Msg: "authentification Cursor révoquée (shouldLogout) : renouveler CURSOR_REFRESH_TOKEN " +
-				"(SQLite cursorAuth/refreshToken ou `agent login`) et mettre à jour Infisical",
+			Msg: fmt.Sprintf(
+				"authentification Cursor révoquée (shouldLogout) : renouveler %s "+
+					"(SQLite cursorAuth/refreshToken ou `agent login`) et mettre à jour Infisical",
+				a.secretVar),
 		}
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		log.Printf("Cursor: oauth refusé (HTTP %d) — CURSOR_REFRESH_TOKEN %s", resp.StatusCode, Fingerprint(a.bundle.refresh))
+		log.Printf("Cursor: oauth refusé (HTTP %d) — %s %s", resp.StatusCode, a.secretVar, Fingerprint(a.bundle.refresh))
 		return "", &AuthError{
 			Msg: fmt.Sprintf(
-				"token Cursor refusé (HTTP %d) : refresh expiré ou révoqué — vérifier CURSOR_REFRESH_TOKEN "+
+				"token Cursor refusé (HTTP %d) : refresh expiré ou révoqué — vérifier %s "+
 					"(longueur et empreinte SHA-256 dans les logs du pod)",
-				resp.StatusCode),
+				resp.StatusCode, a.secretVar),
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -184,7 +358,7 @@ func (a *authenticator) refreshLocked() (string, error) {
 
 	access := strings.TrimSpace(or.AccessToken)
 	if access == "" {
-		return "", &AuthError{Msg: "oauth/token: access_token absent — renouveler CURSOR_REFRESH_TOKEN"}
+		return "", &AuthError{Msg: fmt.Sprintf("oauth/token: access_token absent — renouveler %s", a.secretVar)}
 	}
 
 	exp, ok := jwtExp(access)
@@ -206,11 +380,11 @@ func (a *authenticator) refreshLocked() (string, error) {
 	return access, nil
 }
 
-func (o oauthResponse) logout() bool {
-	if o.ShouldLogout != nil && *o.ShouldLogout {
+func logoutFlag(camel, snake *bool) bool {
+	if camel != nil && *camel {
 		return true
 	}
-	if o.ShouldLogoutSnake != nil && *o.ShouldLogoutSnake {
+	if snake != nil && *snake {
 		return true
 	}
 	return false

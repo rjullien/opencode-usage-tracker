@@ -70,16 +70,17 @@ func main() {
 		log.Printf("Devin ACU source: absente (pas de DEVIN_API_KEY)")
 	}
 
-	// Cursor + Grok Bot : OPTIONNEL. Sans CURSOR_REFRESH_TOKEN, la section
-	// est absente. Seul le refresh token est stocké (Infisical) ; l'access JWT
-	// reste en mémoire process.
+	// Cursor + Grok Bot : OPTIONNEL. Sans CURSOR_API_KEY ni CURSOR_REFRESH_TOKEN,
+	// la section est absente. Credential durable en Infisical (clé API crsr_…
+	// préférée) ; l'access JWT reste en mémoire process.
 	var curSrc handler.CursorSource
 	curCfg := cursor.ConfigFromEnv(15 * time.Second)
-	if curCfg.RefreshToken != "" {
-		curSrc = cursor.NewFetcher(cursor.NewClient(curCfg), curCfg.RefreshToken, cacheTTL)
-		log.Printf("Cursor source: configurée (CURSOR_REFRESH_TOKEN %s)", cursor.Fingerprint(curCfg.RefreshToken))
+	if curCfg.Enabled() {
+		secret := curCfg.PresenceSecret()
+		curSrc = cursor.NewFetcher(cursor.NewClient(curCfg), secret, cacheTTL)
+		log.Printf("Cursor source: configurée (%s, %s)", curCfg.AuthModeLabel(), cursor.Fingerprint(secret))
 	} else {
-		log.Printf("Cursor source: absente (pas de CURSOR_REFRESH_TOKEN)")
+		log.Printf("Cursor source: absente (pas de CURSOR_API_KEY ni CURSOR_REFRESH_TOKEN)")
 	}
 
 	h := handler.New(fetcher, weights, devSrc, curSrc)

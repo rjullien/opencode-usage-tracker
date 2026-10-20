@@ -71,19 +71,32 @@ type GrokUsage struct {
 
 // Config regroupe ce dont le client a besoin.
 type Config struct {
+	// APIKey : CURSOR_API_KEY (canonique, préfixe crsr_…). Prioritaire.
+	APIKey string
+	// RefreshToken : CURSOR_REFRESH_TOKEN (OAuth). Si préfixe crsr_, traité
+	// comme clé API (filet de sécurité).
 	RefreshToken string
 	Timeout      time.Duration
 	APIBase      string
 	OAuthURL     string
+	ExchangeURL  string
 	WebBase      string
 }
 
-// ConfigFromEnv lit la config Cursor. Sans CURSOR_REFRESH_TOKEN la section est absente.
+// ConfigFromEnv lit la config Cursor. Section absente sans CURSOR_API_KEY ni
+// CURSOR_REFRESH_TOKEN.
 func ConfigFromEnv(timeout time.Duration) Config {
 	return Config{
+		APIKey:       APIKeyFromEnv(),
 		RefreshToken: RefreshTokenFromEnv(),
 		Timeout:      timeout,
 	}
+}
+
+// APIKeyFromEnv lit CURSOR_API_KEY (trim : secret K8s / Infisical porte souvent
+// un \n final).
+func APIKeyFromEnv() string {
+	return strings.TrimSpace(os.Getenv("CURSOR_API_KEY"))
 }
 
 // RefreshTokenFromEnv lit CURSOR_REFRESH_TOKEN (trim : secret K8s / Infisical
@@ -92,7 +105,43 @@ func RefreshTokenFromEnv() string {
 	return strings.TrimSpace(os.Getenv("CURSOR_REFRESH_TOKEN"))
 }
 
-// Client appelle les APIs DashboardService Cursor avec OAuth renouvelable.
+// Enabled indique si une credential Cursor est configurée (section visible).
+func (c Config) Enabled() bool {
+	return c.APIKey != "" || c.RefreshToken != ""
+}
+
+// resolveAuth choisit le mode. CURSOR_API_KEY gagne ; un refresh préfixé
+// crsr_ est traité comme clé API.
+func (c Config) resolveAuth() (mode authMode, secret, secretVar string) {
+	if c.APIKey != "" {
+		return authModeAPIKey, c.APIKey, "CURSOR_API_KEY"
+	}
+	if c.RefreshToken == "" {
+		return authModeNone, "", ""
+	}
+	if strings.HasPrefix(c.RefreshToken, apiKeyPrefix) {
+		return authModeAPIKey, c.RefreshToken, "CURSOR_REFRESH_TOKEN"
+	}
+	return authModeRefresh, c.RefreshToken, "CURSOR_REFRESH_TOKEN"
+}
+
+// PresenceSecret renvoie une credential non vide pour activer le Fetcher
+// (empreinte / présence uniquement — jamais loguée en clair hors Fingerprint).
+func (c Config) PresenceSecret() string {
+	_, secret, _ := c.resolveAuth()
+	return secret
+}
+
+// AuthModeLabel décrit le mode pour les logs de boot (sans secret).
+func (c Config) AuthModeLabel() string {
+	mode, _, secretVar := c.resolveAuth()
+	if mode == authModeNone {
+		return "aucune"
+	}
+	return secretVar + " mode=" + mode.String()
+}
+
+// Client appelle les APIs DashboardService Cursor avec auth renouvelable.
 type Client struct {
 	http *http.Client
 	auth *authenticator
@@ -114,7 +163,7 @@ func NewClient(cfg Config) *Client {
 	httpClient := &http.Client{Timeout: cfg.Timeout}
 	return &Client{
 		http: httpClient,
-		auth: newAuthenticator(httpClient, cfg.RefreshToken, cfg.OAuthURL),
+		auth: newAuthenticator(httpClient, cfg),
 		api:  strings.TrimRight(api, "/"),
 		web:  strings.TrimRight(web, "/"),
 		now:  time.Now,
@@ -207,12 +256,16 @@ func (c *Client) connectRPC(path string, retryOn401 bool) ([]byte, error) {
 		return c.connectRPC(path, false)
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		log.Printf("Cursor: %s refusé (HTTP %d) — CURSOR_REFRESH_TOKEN %s",
-			path, resp.StatusCode, Fingerprint(c.auth.bundle.refresh))
+		log.Printf("Cursor: %s refusé (HTTP %d) — %s %s",
+			path, resp.StatusCode, c.auth.secretVar, c.auth.secretFingerprint())
+		hint := "renouveler " + c.auth.secretVar
+		if c.auth.mode == authModeAPIKey {
+			hint = "vérifier " + c.auth.secretVar + " (clé API crsr_…)"
+		}
 		return nil, &AuthError{
 			Msg: fmt.Sprintf(
-				"API Cursor refusée (HTTP %d) : session expirée — renouveler CURSOR_REFRESH_TOKEN",
-				resp.StatusCode),
+				"API Cursor refusée (HTTP %d) : session expirée — %s",
+				resp.StatusCode, hint),
 		}
 	}
 	if resp.StatusCode != http.StatusOK {
