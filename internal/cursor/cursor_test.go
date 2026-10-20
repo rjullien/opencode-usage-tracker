@@ -25,44 +25,50 @@ func makeJWT(t *testing.T, claims map[string]any) string {
 
 func boolPtr(v bool) *bool { return &v }
 
-// cursorServer mocks oauth + DashboardService + optional web Grok fallback.
+// cursorServer mocks oauth + API-key exchange + DashboardService + web Grok fallback.
 type cursorServer struct {
 	URL string
 
 	mu sync.Mutex
 
-	oauthCalls   int
-	periodCalls  int
-	planCalls    int
-	sandCalls    int
-	sandWebCalls int
+	oauthCalls    int
+	exchangeCalls int
+	periodCalls   int
+	planCalls     int
+	sandCalls     int
+	sandWebCalls  int
 
-	oauthStatus int
-	oauthBody   string
+	oauthStatus    int
+	oauthBody      string
+	exchangeStatus int
+	exchangeBody   string
 
-	periodStatus int
-	periodBody   string
-	planStatus   int
-	planBody     string
-	sandStatus   int
-	sandBody     string
+	periodStatus  int
+	periodBody    string
+	planStatus    int
+	planBody      string
+	sandStatus    int
+	sandBody      string
 	sandWebStatus int
 	sandWebBody   string
 
-	lastAuth   string
-	lastCookie string
-	seenRefresh string
+	lastAuth       string
+	lastCookie     string
+	seenRefresh    string
+	seenExchangeAuth string
 }
 
 func newCursorServer(t *testing.T) *cursorServer {
 	t.Helper()
 	s := &cursorServer{
-		oauthStatus:  200,
-		periodStatus: 200,
-		planStatus:   200,
-		sandStatus:   200,
-		sandWebStatus: 200,
-		oauthBody:    "", // filled per-test
+		oauthStatus:    200,
+		exchangeStatus: 200,
+		periodStatus:   200,
+		planStatus:     200,
+		sandStatus:     200,
+		sandWebStatus:  200,
+		oauthBody:      "", // filled per-test
+		exchangeBody:   "",
 		periodBody: `{
 			"billingCycleStart":"2026-09-01T00:00:00Z",
 			"billingCycleEnd":"2026-10-01T00:00:00Z",
@@ -98,6 +104,18 @@ func newCursorServer(t *testing.T) *cursorServer {
 				w.Write([]byte(s.oauthBody))
 			} else {
 				w.Write([]byte(`{"access_token":"missing"}`))
+			}
+			return
+
+		case strings.Contains(r.URL.Path, "exchange_user_api_key"):
+			s.exchangeCalls++
+			s.seenExchangeAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(s.exchangeStatus)
+			if s.exchangeBody != "" {
+				w.Write([]byte(s.exchangeBody))
+			} else {
+				w.Write([]byte(`{"accessToken":"missing"}`))
 			}
 			return
 
@@ -151,9 +169,7 @@ func (s *cursorServer) client(t *testing.T, refresh string, accessJWT string) *C
 		})
 	}
 	s.mu.Lock()
-	logout := false
 	s.oauthBody = `{"access_token":"` + accessJWT + `","id_token":"id","shouldLogout":false}`
-	_ = logout
 	s.mu.Unlock()
 
 	return NewClient(Config{
@@ -161,7 +177,30 @@ func (s *cursorServer) client(t *testing.T, refresh string, accessJWT string) *C
 		Timeout:      2 * time.Second,
 		APIBase:      s.URL,
 		OAuthURL:     s.URL + "/oauth/token",
+		ExchangeURL:  s.URL + "/auth/exchange_user_api_key",
 		WebBase:      s.URL,
+	})
+}
+
+func (s *cursorServer) apiKeyClient(t *testing.T, apiKey string, accessJWT string) *Client {
+	t.Helper()
+	if accessJWT == "" {
+		accessJWT = makeJWT(t, map[string]any{
+			"sub": "auth0|user_test",
+			"exp": time.Now().Add(time.Hour).Unix(),
+		})
+	}
+	s.mu.Lock()
+	s.exchangeBody = `{"accessToken":"` + accessJWT + `","refreshToken":"exchanged-refresh-unused"}`
+	s.mu.Unlock()
+
+	return NewClient(Config{
+		APIKey:      apiKey,
+		Timeout:     2 * time.Second,
+		APIBase:     s.URL,
+		OAuthURL:    s.URL + "/oauth/token",
+		ExchangeURL: s.URL + "/auth/exchange_user_api_key",
+		WebBase:     s.URL,
 	})
 }
 
@@ -447,5 +486,276 @@ func TestJwtSubStripsProviderPrefix(t *testing.T) {
 	sub, ok := jwtSub(tok)
 	if !ok || sub != "user_xyz" {
 		t.Errorf("jwtSub = %q ok=%v", sub, ok)
+	}
+}
+
+func TestAPIKeyExchangeOK(t *testing.T) {
+	srv := newCursorServer(t)
+	access := makeJWT(t, map[string]any{
+		"sub": "auth0|user_test",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	c := srv.apiKeyClient(t, "crsr_test_key_abc", access)
+
+	st, err := c.FetchStatus()
+	if err != nil {
+		t.Fatalf("FetchStatus: %v", err)
+	}
+	if st.Period == nil || st.Period.TotalPercent != 42.5 {
+		t.Errorf("Period = %+v", st.Period)
+	}
+	if st.Grok == nil || st.Grok.UsagePercent != 18.5 {
+		t.Errorf("Grok = %+v (exchange token must work for GetSandUsageStatus)", st.Grok)
+	}
+	if srv.exchangeCalls != 1 {
+		t.Errorf("exchangeCalls = %d, want 1", srv.exchangeCalls)
+	}
+	if srv.oauthCalls != 0 {
+		t.Errorf("oauthCalls = %d, want 0 (API key must not hit /oauth/token)", srv.oauthCalls)
+	}
+	if srv.seenExchangeAuth != "Bearer crsr_test_key_abc" {
+		t.Errorf("exchange Authorization = %q", srv.seenExchangeAuth)
+	}
+	if !strings.HasPrefix(srv.lastAuth, "Bearer "+access[:20]) {
+		t.Errorf("Dashboard Authorization = %q", srv.lastAuth)
+	}
+}
+
+func TestAPIKeyPriorityOverRefresh(t *testing.T) {
+	srv := newCursorServer(t)
+	access := makeJWT(t, map[string]any{"sub": "auth0|u", "exp": time.Now().Add(time.Hour).Unix()})
+	srv.mu.Lock()
+	srv.exchangeBody = `{"accessToken":"` + access + `","refreshToken":"from-exchange"}`
+	srv.oauthBody = `{"access_token":"should-not-be-used","shouldLogout":false}`
+	srv.mu.Unlock()
+
+	c := NewClient(Config{
+		APIKey:       "crsr_priority",
+		RefreshToken: "oauth-refresh-also-set",
+		Timeout:      time.Second,
+		APIBase:      srv.URL,
+		OAuthURL:     srv.URL + "/oauth/token",
+		ExchangeURL:  srv.URL + "/auth/exchange_user_api_key",
+		WebBase:      srv.URL,
+	})
+	if _, err := c.FetchStatus(); err != nil {
+		t.Fatalf("FetchStatus: %v", err)
+	}
+	if srv.exchangeCalls != 1 || srv.oauthCalls != 0 {
+		t.Errorf("exchange=%d oauth=%d, want exchange only", srv.exchangeCalls, srv.oauthCalls)
+	}
+	if c.auth.mode != authModeAPIKey || c.auth.secretVar != "CURSOR_API_KEY" {
+		t.Errorf("mode=%v secretVar=%q", c.auth.mode, c.auth.secretVar)
+	}
+}
+
+func TestCrsrPrefixInRefreshTokenTreatedAsAPIKey(t *testing.T) {
+	srv := newCursorServer(t)
+	access := makeJWT(t, map[string]any{"sub": "auth0|u", "exp": time.Now().Add(time.Hour).Unix()})
+	srv.mu.Lock()
+	srv.exchangeBody = `{"accessToken":"` + access + `","refreshToken":"unused"}`
+	srv.mu.Unlock()
+
+	c := NewClient(Config{
+		RefreshToken: "crsr_overwrote_refresh_var",
+		Timeout:      time.Second,
+		APIBase:      srv.URL,
+		OAuthURL:     srv.URL + "/oauth/token",
+		ExchangeURL:  srv.URL + "/auth/exchange_user_api_key",
+		WebBase:      srv.URL,
+	})
+	if _, err := c.FetchStatus(); err != nil {
+		t.Fatalf("FetchStatus: %v", err)
+	}
+	if srv.exchangeCalls != 1 || srv.oauthCalls != 0 {
+		t.Errorf("exchange=%d oauth=%d", srv.exchangeCalls, srv.oauthCalls)
+	}
+	if c.auth.mode != authModeAPIKey || c.auth.secretVar != "CURSOR_REFRESH_TOKEN" {
+		t.Errorf("mode=%v secretVar=%q (safety net must name CURSOR_REFRESH_TOKEN)", c.auth.mode, c.auth.secretVar)
+	}
+	if srv.seenExchangeAuth != "Bearer crsr_overwrote_refresh_var" {
+		t.Errorf("Authorization = %q", srv.seenExchangeAuth)
+	}
+}
+
+func TestAPIKeyInvalidIsAuthError(t *testing.T) {
+	srv := newCursorServer(t)
+	srv.exchangeStatus = 401
+	srv.exchangeBody = `{"error":"invalid_api_key"}`
+	c := NewClient(Config{
+		APIKey:      "crsr_bad",
+		Timeout:     time.Second,
+		APIBase:     srv.URL,
+		ExchangeURL: srv.URL + "/auth/exchange_user_api_key",
+		WebBase:     srv.URL,
+	})
+
+	_, err := c.FetchStatus()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !IsAuthError(err) {
+		t.Errorf("err = %v (%T), want AuthError", err, err)
+	}
+	if !strings.Contains(err.Error(), "CURSOR_API_KEY") {
+		t.Errorf("err = %q, want CURSOR_API_KEY named", err)
+	}
+}
+
+func TestAPIKeyReExchangeBeforeExpiry(t *testing.T) {
+	srv := newCursorServer(t)
+	longLived := makeJWT(t, map[string]any{
+		"sub": "auth0|u",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	c := srv.apiKeyClient(t, "crsr_skew", longLived)
+
+	if _, err := c.auth.accessToken(); err != nil {
+		t.Fatalf("prime accessToken: %v", err)
+	}
+	if srv.exchangeCalls != 1 {
+		t.Fatalf("prime exchangeCalls = %d, want 1", srv.exchangeCalls)
+	}
+
+	// Access encore présent mais expire dans 2 min → sous refreshSkew (3 min).
+	c.auth.mu.Lock()
+	c.auth.bundle.exp = time.Now().Add(2 * time.Minute)
+	c.auth.mu.Unlock()
+
+	if _, err := c.auth.accessToken(); err != nil {
+		t.Fatalf("skew accessToken: %v", err)
+	}
+	if srv.exchangeCalls != 2 {
+		t.Errorf("exchangeCalls = %d, want 2 (re-exchange before expiry)", srv.exchangeCalls)
+	}
+	if srv.oauthCalls != 0 {
+		t.Errorf("oauthCalls = %d, want 0", srv.oauthCalls)
+	}
+}
+
+func TestAPIKeyRetryOn401ReExchanges(t *testing.T) {
+	access1 := makeJWT(t, map[string]any{"sub": "auth0|u", "exp": time.Now().Add(time.Hour).Unix()})
+	access2 := makeJWT(t, map[string]any{"sub": "auth0|u", "exp": time.Now().Add(2 * time.Hour).Unix()})
+	var exchangeN, periodN atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("/auth/exchange_user_api_key", func(w http.ResponseWriter, r *http.Request) {
+		n := exchangeN.Add(1)
+		tok := access1
+		if n > 1 {
+			tok = access2
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"accessToken":"` + tok + `","refreshToken":"x"}`))
+	})
+	mux.HandleFunc("/aiserver.v1.DashboardService/GetCurrentPeriodUsage", func(w http.ResponseWriter, r *http.Request) {
+		n := periodN.Add(1)
+		if n == 1 {
+			w.WriteHeader(401)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"billingCycleStart":"2026-09-01T00:00:00Z",
+			"billingCycleEnd":"2026-10-01T00:00:00Z",
+			"planUsage":{"totalPercentUsed":10,"autoPercentUsed":5,"apiPercentUsed":5,"totalSpend":1,"limit":100}
+		}`))
+	})
+	mux.HandleFunc("/aiserver.v1.DashboardService/GetPlanInfo", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"planInfo":{"planName":"Pro"}}`))
+	})
+	mux.HandleFunc("/aiserver.v1.DashboardService/GetSandUsageStatus", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"usagePercent":1,"hasNonZeroIncludedLimit":true}`))
+	})
+	ts := httptest.NewServer(mux)
+	t.Cleanup(ts.Close)
+
+	c := NewClient(Config{
+		APIKey:      "crsr_401",
+		Timeout:     2 * time.Second,
+		APIBase:     ts.URL,
+		ExchangeURL: ts.URL + "/auth/exchange_user_api_key",
+		WebBase:     ts.URL,
+	})
+	st, err := c.FetchStatus()
+	if err != nil {
+		t.Fatalf("FetchStatus: %v", err)
+	}
+	if st.Period == nil {
+		t.Fatal("Period nil after 401 retry")
+	}
+	if exchangeN.Load() < 2 {
+		t.Errorf("exchange calls = %d, want >= 2 (initial + after 401)", exchangeN.Load())
+	}
+	if periodN.Load() < 2 {
+		t.Errorf("period calls = %d, want >= 2", periodN.Load())
+	}
+}
+
+func TestAPIKeyIgnoresExchangedRefreshForOAuth(t *testing.T) {
+	srv := newCursorServer(t)
+	access := makeJWT(t, map[string]any{"sub": "auth0|u", "exp": time.Now().Add(time.Hour).Unix()})
+	c := srv.apiKeyClient(t, "crsr_no_oauth", access)
+	if _, err := c.FetchStatus(); err != nil {
+		t.Fatalf("FetchStatus: %v", err)
+	}
+	// Invalidate and force renew: must hit exchange again, never oauth.
+	c.auth.invalidateAccess()
+	if _, err := c.auth.accessToken(); err != nil {
+		t.Fatalf("accessToken renew: %v", err)
+	}
+	if srv.oauthCalls != 0 {
+		t.Errorf("oauthCalls = %d, exchanged refresh must not go to /oauth/token", srv.oauthCalls)
+	}
+	if srv.exchangeCalls < 2 {
+		t.Errorf("exchangeCalls = %d, want >= 2", srv.exchangeCalls)
+	}
+}
+
+func TestConfigFromEnvPriorityAndCrsrSafetyNet(t *testing.T) {
+	t.Setenv("CURSOR_API_KEY", "crsr_from_api_key")
+	t.Setenv("CURSOR_REFRESH_TOKEN", "oauth-refresh")
+	cfg := ConfigFromEnv(time.Second)
+	if !cfg.Enabled() {
+		t.Fatal("Enabled = false")
+	}
+	mode, secret, secretVar := cfg.resolveAuth()
+	if mode != authModeAPIKey || secret != "crsr_from_api_key" || secretVar != "CURSOR_API_KEY" {
+		t.Errorf("resolveAuth = %v %q %q", mode, secret, secretVar)
+	}
+
+	t.Setenv("CURSOR_API_KEY", "")
+	t.Setenv("CURSOR_REFRESH_TOKEN", "crsr_in_refresh")
+	cfg2 := ConfigFromEnv(time.Second)
+	mode2, secret2, secretVar2 := cfg2.resolveAuth()
+	if mode2 != authModeAPIKey || secret2 != "crsr_in_refresh" || secretVar2 != "CURSOR_REFRESH_TOKEN" {
+		t.Errorf("safety net = %v %q %q", mode2, secret2, secretVar2)
+	}
+
+	t.Setenv("CURSOR_REFRESH_TOKEN", "plain-oauth-refresh")
+	cfg3 := ConfigFromEnv(time.Second)
+	mode3, _, secretVar3 := cfg3.resolveAuth()
+	if mode3 != authModeRefresh || secretVar3 != "CURSOR_REFRESH_TOKEN" {
+		t.Errorf("oauth mode = %v %q", mode3, secretVar3)
+	}
+
+	t.Setenv("CURSOR_API_KEY", "")
+	t.Setenv("CURSOR_REFRESH_TOKEN", "")
+	if ConfigFromEnv(time.Second).Enabled() {
+		t.Error("Enabled with empty env")
+	}
+}
+
+func TestFetcherEnabledWithAPIKey(t *testing.T) {
+	srv := newCursorServer(t)
+	c := srv.apiKeyClient(t, "crsr_fetcher", "")
+	f := NewFetcher(c, "crsr_fetcher", time.Minute)
+	st := f.Statuses()
+	if st == nil || st.Period == nil {
+		t.Fatalf("Statuses = %+v", st)
+	}
+	if srv.exchangeCalls < 1 {
+		t.Error("expected exchange via fetcher")
 	}
 }

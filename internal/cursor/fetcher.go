@@ -22,16 +22,18 @@ type Fetcher struct {
 }
 
 // NewFetcher crée un Fetcher. token vide → Statuses() renvoie nil (section absente).
-func NewFetcher(client *Client, refreshToken string, cacheTTL time.Duration) *Fetcher {
+// token est n'importe quelle credential configurée (clé API ou refresh) — utilisée
+// uniquement comme sentinel de présence, jamais loguée ici.
+func NewFetcher(client *Client, token string, cacheTTL time.Duration) *Fetcher {
 	return &Fetcher{
 		client:   client,
-		token:    strings.TrimSpace(refreshToken),
+		token:    strings.TrimSpace(token),
 		cacheTTL: cacheTTL,
 	}
 }
 
 // Statuses renvoie le statut Cursor, en fetchant si le cache a expiré.
-// nil quand aucun refresh token n'est configuré.
+// nil quand aucune credential Cursor n'est configurée.
 func (f *Fetcher) Statuses() *Status {
 	if f.token == "" {
 		return nil

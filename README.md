@@ -135,7 +135,8 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 | `DEVIN_ORG_ID` | — | Organisation Devin (`org-...`) à interroger, optionnelle : indispensable quand le token est un PAT dont `/v3/self` ne renvoie pas d'`org_id` |
 | `DEVIN_RESET_DAY` | `5` | Jour du mois du reset de budget Devin (plan Pro individuel, non exposé par l'API). Seules les valeurs `1`–`28` sont retenues : au-delà, tous les mois n'ont pas ce jour, et la variable retombe sur le défaut `5` |
 | `DEVIN_API_SERVER` | `https://server.codeium.com` | Hôte Connect-RPC pour `GetUserStatus` (quotas jour/semaine) |
-| `CURSOR_REFRESH_TOKEN` | — | Refresh token Cursor (optionnel) — active la **section Cursor + Grok Bot**. Stocker uniquement ce secret dans Infisical ; l'access JWT est dérivé en mémoire |
+| `CURSOR_API_KEY` | — | Clé API utilisateur Cursor `crsr_…` (optionnel, **canonique**) — active la **section Cursor + Grok Bot**. Créée dans Cursor Dashboard → API Keys ; stockée dans Infisical ; l'access JWT est dérivé en mémoire via `exchange_user_api_key` |
+| `CURSOR_REFRESH_TOKEN` | — | Refresh OAuth Cursor (optionnel, historique). Si la valeur commence par `crsr_`, elle est traitée comme une clé API (filet de sécurité). Sinon : refresh via `/oauth/token` |
 
 Toute variable commençant par `OPENCODE_GO_API_KEY` est découverte automatiquement, et le label
 d'affichage est déduit du suffixe : `OPENCODE_GO_API_KEY_R` s'affiche « R »,
@@ -233,47 +234,64 @@ partir de `DEVIN_RESET_DAY` (défaut 5).
 
 ### Section Cursor + Grok Bot (optionnelle, à part du lot OpenCode)
 
-Sans `CURSOR_REFRESH_TOKEN`, rien ne change : la section est absente et
-`/api/cursor` répond 404. Avec un refresh token, une carte « Cursor — Pro »
-apparaît sous la grille OpenCode (et sous Devin le cas échéant) : **usage
-mensuel** (total / auto / API, dépense, fin de cycle) + **Grok Bot**
-hebdomadaire si le compte a une allowance. Un échec Cursor n'empêche jamais
-le rendu OpenCode/Devin ; un échec Grok Bot n'empêche jamais d'afficher
-l'usage mensuel Cursor.
+Sans `CURSOR_API_KEY` ni `CURSOR_REFRESH_TOKEN`, rien ne change : la section
+est absente et `/api/cursor` répond 404. Avec l'une des deux, une carte
+« Cursor — Pro » apparaît sous la grille OpenCode (et sous Devin le cas
+échéant) : **usage mensuel** (total / auto / API, dépense, fin de cycle) +
+**Grok Bot** hebdomadaire si le compte a une allowance. Un échec Cursor
+n'empêche jamais le rendu OpenCode/Devin ; un échec Grok Bot n'empêche
+jamais d'afficher l'usage mensuel Cursor.
 
-⚠️ Ces APIs Cursor (`api2.cursor.sh` DashboardService + OAuth) sont **non
-documentées / non officielles** et susceptibles de changer. En cas de
-`shouldLogout: true` ou de refresh révoqué, il faut se ré-authentifier et
-mettre à jour le secret.
+⚠️ Ces APIs Cursor (`api2.cursor.sh` DashboardService + auth) sont **non
+documentées / non officielles** et susceptibles de changer. En cas de clé
+invalide, `shouldLogout: true` ou refresh révoqué, il faut renouveler le
+secret dans Infisical.
 
-**Auth renouvelable (adaptée à Infisical)**
+**Auth renouvelable (adaptée à Infisical)** — priorité `CURSOR_API_KEY`
 
-- Secret durable : `CURSOR_REFRESH_TOKEN` uniquement (jamais l'access token).
-- Au runtime, le service appelle `POST https://api2.cursor.sh/oauth/token`
-  avec `grant_type=refresh_token` et le client_id public Cursor, obtient un
-  access JWT, et le garde **en mémoire process**.
-- Renouvellement automatique si le JWT expire dans ~3 minutes, ou sur HTTP 401.
-- Cursor ne consomme en général pas le refresh (RFC 6749 §6). Si une réponse
-  porte un nouveau `refresh_token`, il est préféré en mémoire et un log invite
-  à mettre à jour Infisical.
+1. **Clé API utilisateur (recommandé)** — `CURSOR_API_KEY` (`crsr_…`)
+   - Créée dans **Cursor Dashboard → API Keys**.
+   - Au runtime : `POST https://api2.cursor.sh/auth/exchange_user_api_key`
+     avec `Authorization: Bearer <crsr_…>` et body `{}`, obtient
+     `{accessToken, refreshToken}`.
+   - L'access JWT (~1 h) est gardé **en mémoire process** et sert de Bearer
+     aux appels DashboardService (y compris Grok Bot).
+   - Le `refreshToken` renvoyé par l'échange **ne se renouvelle pas** via
+     `/oauth/token` : on re-échange la clé quelques minutes avant expiration
+     du JWT, ou une fois sur HTTP 401.
+   - Clé invalide / révoquée → erreur d'auth nommant `CURSOR_API_KEY`.
 
-**Où trouver le refresh token**
+2. **Refresh OAuth (historique)** — `CURSOR_REFRESH_TOKEN`
+   - `POST https://api2.cursor.sh/oauth/token` avec
+     `grant_type=refresh_token` et le client_id public Cursor.
+   - Renouvellement automatique si le JWT expire dans ~3 minutes, ou sur 401.
+   - Si la réponse porte un nouveau `refresh_token`, il est préféré en mémoire
+     et un log invite à mettre à jour Infisical.
+   - **Filet de sécurité** : si la valeur commence par `crsr_`, elle est
+     traitée comme une clé API (même flux d'échange) — utile si le secret a
+     été écrasé sans renommer la variable.
 
-1. **SQLite Cursor desktop** (clé `cursorAuth/refreshToken`) :
-   - macOS : `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`
-   - Linux : `~/.config/Cursor/User/globalStorage/state.vscdb`
-   - Windows : `%APPDATA%\Cursor\User\globalStorage\state.vscdb`
-   ```bash
-   sqlite3 state.vscdb "SELECT value FROM ItemTable WHERE key = 'cursorAuth/refreshToken';"
-   ```
-2. **CLI `agent login`** : entrée keychain / secret service
-   `cursor-refresh-token` (selon la plateforme).
+**Où trouver les secrets**
 
-**Infisical** — exemple de chemin : `/agents/cursor` contenant uniquement
-`CURSOR_REFRESH_TOKEN`. Ne pas y mettre d'access token.
+1. **Clé API** : Cursor Dashboard → API Keys → créer / copier `crsr_…`.
+2. **Refresh OAuth** (historique) :
+   - SQLite Cursor desktop (`cursorAuth/refreshToken`) :
+     - macOS : `~/Library/Application Support/Cursor/User/globalStorage/state.vscdb`
+     - Linux : `~/.config/Cursor/User/globalStorage/state.vscdb`
+     - Windows : `%APPDATA%\Cursor\User\globalStorage\state.vscdb`
+     ```bash
+     sqlite3 state.vscdb "SELECT value FROM ItemTable WHERE key = 'cursorAuth/refreshToken';"
+     ```
+   - CLI `agent login` : entrée keychain `cursor-refresh-token`.
+
+**Infisical** — chemin typique `/agents/cursor` avec `CURSOR_API_KEY`
+(canonique). Ne pas y mettre d'access token. Côté cluster, le Deployment doit
+mapper `CURSOR_API_KEY` depuis le secret syncé (voir `vps-infra`).
 
 **Endpoints interrogés** (Bearer access token, `Connect-Protocol-Version: 1`) :
 
+- `POST …/auth/exchange_user_api_key` (mode clé API) ou `POST …/oauth/token`
+  (mode refresh)
 - `POST …/aiserver.v1.DashboardService/GetCurrentPeriodUsage`
 - `POST …/aiserver.v1.DashboardService/GetPlanInfo` (optionnel)
 - `POST …/aiserver.v1.DashboardService/GetSandUsageStatus` (Grok Bot) ;
