@@ -738,6 +738,36 @@ func TestDashboardCursorOnDemandWithoutLimit(t *testing.T) {
 	mustContain(t, body, "Hors forfait", "2,50 $", "limite inconnue")
 }
 
+func TestDashboardCursorAfficheLesRestants(t *testing.T) {
+	// « Il me reste combien ? » : les deux soldes restants doivent apparaître.
+	h := New(emptyPoller{}, nil, nil, stubCursor{s: cursorStatusOK()})
+	body := renderDashboard(t, h)
+	mustContain(t, body, "reste 57,50 $", "reste 35,00 $")
+}
+
+func TestDashboardCursorRestantDeriveSansValeurAPI(t *testing.T) {
+	// remaining absent de la réponse API → dérivé limite − dépense, même solde.
+	s := cursorStatusOK()
+	s.Period.RemainingCents = 0
+	s.Period.OnDemand.RemainingCents = 0
+	h := New(emptyPoller{}, nil, nil, stubCursor{s: s})
+	body := renderDashboard(t, h)
+	mustContain(t, body, "reste 57,50 $", "reste 35,00 $")
+}
+
+func TestDashboardCursorRestantIndeterminable(t *testing.T) {
+	// Ni limite ni remaining : aucun solde inventé.
+	s := cursorStatusOK()
+	s.Period.LimitCents = 0
+	s.Period.RemainingCents = 0
+	s.Period.OnDemand = &cursor.OnDemandUsage{SpendCents: 250, LimitType: "user"}
+	h := New(emptyPoller{}, nil, nil, stubCursor{s: s})
+	body := renderDashboard(t, h)
+	if strings.Contains(body, "reste ") {
+		t.Error("solde restant affiché alors qu'il est indéterminable")
+	}
+}
+
 func TestDashboardCursorAbsentWithoutSource(t *testing.T) {
 	h := newTestHandler(t) // nil cursor
 	body := renderDashboard(t, h)

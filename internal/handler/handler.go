@@ -284,6 +284,11 @@ type CursorMoney struct {
 	HasOnDemand   bool
 	HasLimit      bool
 	LimitType     string // "user" | "team" (libellé UI)
+
+	// Soldes restants (« il me reste combien ? ») : valeur API quand elle
+	// existe, sinon limite − dépense. Vide = indéterminable (aucune limite).
+	IncludedRemaining string
+	OnDemandRemaining string
 }
 
 // CursorBar is one usage bar (Total / Auto / API / Grok Bot).
@@ -346,6 +351,9 @@ func buildCursorMoney(p *cursor.PeriodUsage) *CursorMoney {
 		} else if p.TotalPercent > 0 {
 			m.IncludedPct = int(p.TotalPercent + 0.5)
 		}
+		if rest, ok := remainingUSD(p.RemainingCents, p.LimitCents, includedSpend); ok {
+			m.IncludedRemaining = rest
+		}
 	}
 
 	if od := p.OnDemand; od != nil {
@@ -355,6 +363,9 @@ func buildCursorMoney(p *cursor.PeriodUsage) *CursorMoney {
 		if m.HasLimit {
 			m.OnDemandLimit = fmtUSD(od.LimitCents)
 			m.OnDemandPct = int(od.Percent + 0.5)
+		}
+		if rest, ok := remainingUSD(od.RemainingCents, od.LimitCents, od.SpendCents); ok {
+			m.OnDemandRemaining = rest
 		}
 		switch od.LimitType {
 		case "team":
@@ -368,6 +379,20 @@ func buildCursorMoney(p *cursor.PeriodUsage) *CursorMoney {
 		return nil
 	}
 	return m
+}
+
+// remainingUSD rend le solde restant quand il est déterminable : la valeur
+// portée par l'API d'abord (remaining), sinon limite − dépense calculés sur
+// les mêmes champs de la même réponse. false quand aucune limite n'est connue
+// et que l'API ne porte pas de restant — on n'invente pas de solde.
+func remainingUSD(apiRemaining, limit, spend int64) (string, bool) {
+	if apiRemaining > 0 {
+		return fmtUSD(apiRemaining), true
+	}
+	if limit > 0 {
+		return fmtUSD(limit - spend), true
+	}
+	return "", false
 }
 
 func clampPct(v float64) float64 {
