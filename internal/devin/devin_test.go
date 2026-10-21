@@ -1,10 +1,12 @@
 package devin
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -814,6 +816,128 @@ func TestParseQuotaHideDaily(t *testing.T) {
 	}
 	if q.WeeklyUsedPercent == nil || *q.WeeklyUsedPercent != 30 {
 		t.Errorf("weekly used = %v, want 30", q.WeeklyUsedPercent)
+	}
+}
+
+func TestParseQuotaOnDemandEtFacturation(t *testing.T) {
+	raw := `{
+	  "userStatus":{"planStatus":{
+	    "planInfo":{"planName":"Pro","billingStrategy":"BILLING_STRATEGY_QUOTA"},
+	    "planStart":"2026-10-18T20:06:33Z",
+	    "planEnd":"2026-11-18T20:06:33Z",
+	    "dailyQuotaRemainingPercent":100,
+	    "overageBalanceMicros":"623376568"
+	  }}
+	}`
+	q, err := parseQuota([]byte(raw))
+	if err != nil {
+		t.Fatalf("parseQuota: %v", err)
+	}
+	if q.BillingStrategy != "BILLING_STRATEGY_QUOTA" {
+		t.Errorf("BillingStrategy = %q, want BILLING_STRATEGY_QUOTA", q.BillingStrategy)
+	}
+	if q.OnDemandBalanceUSD == nil {
+		t.Fatalf("OnDemandBalanceUSD = nil, want 623.376568")
+	}
+	if diff := *q.OnDemandBalanceUSD - 623.376568; diff > 1e-6 || diff < -1e-6 {
+		t.Errorf("OnDemandBalanceUSD = %v, want 623.376568", *q.OnDemandBalanceUSD)
+	}
+	if q.PlanStart == nil || q.PlanStart.UTC().Format(time.RFC3339) != "2026-10-18T20:06:33Z" {
+		t.Errorf("PlanStart = %v, want 2026-10-18T20:06:33Z", q.PlanStart)
+	}
+	if q.PlanEnd == nil || q.PlanEnd.UTC().Format(time.RFC3339) != "2026-11-18T20:06:33Z" {
+		t.Errorf("PlanEnd = %v, want 2026-11-18T20:06:33Z", q.PlanEnd)
+	}
+}
+
+func TestMicroUSDAbsentOuInvalide(t *testing.T) {
+	if _, ok := microsUSD(json.Number("")); ok {
+		t.Error("microsUSD(\"\") = ok, want false")
+	}
+	if _, ok := microsUSD(json.Number("pas-un-nombre")); ok {
+		t.Error("microsUSD(invalide) = ok, want false")
+	}
+	if v, ok := microsUSD(json.Number("500000")); !ok || v != 0.5 {
+		t.Errorf("microsUSD(500000) = %v,%v, want 0.5,true", v, ok)
+	}
+}
+
+func TestPlanCycleBornesDuPlanQuandCourant(t *testing.T) {
+	now := mustParse(t, "2026-10-20T12:00:00Z")
+	q := &Quota{
+		PlanStart: timePtr(mustParse(t, "2026-10-18T20:06:33Z")),
+		PlanEnd:   timePtr(mustParse(t, "2026-11-18T20:06:33Z")),
+	}
+	start, end, ok := planCycle(q, now)
+	if !ok {
+		t.Fatalf("planCycle = !ok, want les bornes du plan (now est dans le cycle)")
+	}
+	if start.Unix() != mustParse(t, "2026-10-18T20:06:33Z").Unix() || end.Unix() != mustParse(t, "2026-11-18T20:06:33Z").Unix() {
+		t.Errorf("planCycle = %s → %s", start, end)
+	}
+}
+
+func TestPlanCycleIgnoreCycleHorsNow(t *testing.T) {
+	now := mustParse(t, "2026-09-20T12:00:00Z")
+	// Cycle périmé (fixture) : ne contient pas now → repli local exigé.
+	q := &Quota{
+		PlanStart: timePtr(mustParse(t, "2026-08-18T20:06:33Z")),
+		PlanEnd:   timePtr(mustParse(t, "2026-09-18T20:06:33Z")),
+	}
+	if _, _, ok := planCycle(q, now); ok {
+		t.Error("planCycle = ok sur un cycle qui ne contient pas now, want false")
+	}
+	// Bornes inversées ou absentes : jamais acceptées.
+	q2 := &Quota{PlanStart: timePtr(mustParse(t, "2026-11-18T20:06:33Z")), PlanEnd: timePtr(mustParse(t, "2026-10-18T20:06:33Z"))}
+	if _, _, ok := planCycle(q2, now); ok {
+		t.Error("planCycle = ok sur bornes inversées, want false")
+	}
+	if _, _, ok := planCycle(&Quota{}, now); ok {
+		t.Error("planCycle = ok sans bornes, want false")
+	}
+}
+
+// timePtr évite de prendre l'adresse d'un littéral dans les fixtures.
+func timePtr(t time.Time) *time.Time { return &t }
+
+func TestFetchStatusFenetreDepuisBornesDuPlan(t *testing.T) {
+	// Le siège porte un cycle qui court maintenant : la requête consumption
+	// doit être fenêtrée dessus, pas sur le recalcul DEVIN_RESET_DAY.
+	rest := testServer(t, selfBody, consumptionBody, 200)
+	seat := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+		  "userStatus":{"planStatus":{
+		    "planInfo":{"planName":"Pro","billingStrategy":"BILLING_STRATEGY_QUOTA"},
+		    "planStart":"2026-10-18T20:06:33Z",
+		    "planEnd":"2026-11-18T20:06:33Z",
+		    "dailyQuotaRemainingPercent":100
+		  }}
+		}`))
+	}))
+	t.Cleanup(seat.Close)
+
+	cfg := testConfig(rest.URL)
+	cfg.SeatURL = seat.URL
+	cfg.ResetDay = 5
+	c := frozen(NewClient(cfg), mustParse(t, "2026-10-20T12:00:00Z"))
+
+	s, err := c.FetchStatus()
+	if err != nil {
+		t.Fatalf("FetchStatus: %v", err)
+	}
+	_, query := rest.consumption()
+	if got, want := query.Get("time_after"), strconv.FormatInt(mustParse(t, "2026-10-18T20:06:33Z").Unix(), 10); got != want {
+		t.Errorf("time_after = %q, want %q (planStart du plan)", got, want)
+	}
+	if got, want := query.Get("time_before"), strconv.FormatInt(mustParse(t, "2026-10-20T12:00:00Z").Unix(), 10); got != want {
+		t.Errorf("time_before = %q, want %q (plafonné à maintenant)", got, want)
+	}
+	if s.CycleStart == nil || s.CycleStart.Unix() != mustParse(t, "2026-10-18T20:06:33Z").Unix() {
+		t.Errorf("CycleStart = %v, want planStart", s.CycleStart)
+	}
+	if s.CycleEnd == nil || s.CycleEnd.Unix() != mustParse(t, "2026-11-18T20:06:33Z").Unix() {
+		t.Errorf("CycleEnd = %v, want planEnd (fin de cycle, non plafonnée)", s.CycleEnd)
 	}
 }
 

@@ -479,6 +479,24 @@ func devinStatusOK() *devin.Status {
 	return devinStatusPourCycle(mustTime("2026-08-05T08:00:00Z"), mustTime("2026-09-05T08:00:00Z"))
 }
 
+func TestDashboardDevinHorsForfaitEtFacturationQuota(t *testing.T) {
+	// Solde on-demand + stratégie « quotas » : le dashboard doit afficher le
+	// hors forfait en $ et expliquer pourquoi les ACU restent à zéro.
+	s := devinStatusOK()
+	balance := 623.376568
+	s.Quota.OnDemandBalanceUSD = &balance
+	s.Quota.BillingStrategy = "BILLING_STRATEGY_QUOTA"
+
+	h := New(stubPoller{}, nil, stubDevin{s: s}, nil)
+	body := renderDashboard(t, h)
+
+	mustContain(t, body,
+		"Hors forfait (on-demand)",
+		"623,38 $",
+		"facturation quotas",
+	)
+}
+
 func TestDashboardWithDevinSection(t *testing.T) {
 	h := New(stubPoller{}, nil, stubDevin{s: devinStatusOK()}, nil)
 	body := renderDashboard(t, h)

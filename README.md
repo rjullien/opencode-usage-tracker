@@ -133,7 +133,7 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 | `OPENCODE_GO_API_KEY_<SUFFIXE>` | — | Clé supplémentaire, affichée « SUFFIXE » |
 | `DEVIN_API_KEY` | — | Token Devin (optionnel) — active la **section Devin**, totalement séparée du lot OpenCode |
 | `DEVIN_ORG_ID` | — | Organisation Devin (`org-...`) à interroger, optionnelle : indispensable quand le token est un PAT dont `/v3/self` ne renvoie pas d'`org_id` |
-| `DEVIN_RESET_DAY` | `5` | Jour du mois du reset de budget Devin (plan Pro individuel, non exposé par l'API). Seules les valeurs `1`–`28` sont retenues : au-delà, tous les mois n'ont pas ce jour, et la variable retombe sur le défaut `5` |
+| `DEVIN_RESET_DAY` | `5` | **Repli uniquement** : jour du mois du reset de budget Devin, utilisé quand `GetUserStatus` ne porte pas de cycle courant. Les bornes réelles `planStart`/`planEnd` de `GetUserStatus` priment quand elles contiennent maintenant (vérifié en prod le 20/10/2026). Seules les valeurs `1`–`28` sont retenues : au-delà, tous les mois n'ont pas ce jour, et la variable retombe sur le défaut `5` |
 | `DEVIN_API_SERVER` | `https://server.codeium.com` | Hôte Connect-RPC pour `GetUserStatus` (quotas jour/semaine) |
 | `CURSOR_API_KEY` | — | Clé API utilisateur Cursor `crsr_…` (optionnel, **canonique**) — active la **section Cursor + Grok Bot**. Créée dans Cursor Dashboard → API Keys ; stockée dans Infisical ; l'access JWT est dérivé en mémoire via `exchange_user_api_key` |
 | `CURSOR_REFRESH_TOKEN` | — | Refresh OAuth Cursor (optionnel, historique). Si la valeur commence par `crsr_`, elle est traitée comme une clé API (filet de sécurité). Sinon : refresh via `/oauth/token` |
@@ -148,8 +148,13 @@ aucune modification de code. L'ordre d'affichage suit le nom de la variable, pou
 Sans `DEVIN_API_KEY`, rien ne change : la section Devin est absente du dashboard et
 `/api/devin` répond 404. Avec un token `cog_` (PAT ou service user), une carte
 « Devin — Pro » apparaît **en dessous** de la grille OpenCode : **quotas Daily /
-Weekly** (pourcentages utilisés, resets), plus la consommation ACU du cycle
-(jours relevés, répartition par produit). Les 4 clés OpenCode partagées ne sont
+Weekly** (pourcentages utilisés, resets), **solde hors forfait (on-demand)** en $
+(`overageBalanceMicros` de `GetUserStatus`, absent = ligne masquée), plus la
+consommation ACU du cycle (jours relevés, répartition par produit). Le cycle
+affiché est celui réellement interrogé : `planStart`/`planEnd` du plan quand ils
+courent, sinon le recalcul `DEVIN_RESET_DAY`. Sur un plan à facturation quotas
+(`BILLING_STRATEGY_QUOTA`), une ligne explique que les ACU restent à zéro par
+construction. Les 4 clés OpenCode partagées ne sont
 jamais mélangées à Devin, et un échec Devin n'empêche jamais le rendu de la grille
 OpenCode.
 

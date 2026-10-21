@@ -254,7 +254,23 @@ func (c *Client) FetchStatus() (Status, error) {
 	}
 
 	now := c.now()
-	start, end := CycleBounds(now, c.resetDay)
+
+	// Quotas jour/semaine : chemin soft, et PREMIER appel volontaire — le
+	// planStatus porte aussi les bornes réelles du cycle (planStart/planEnd),
+	// qui priment sur le recalcul local pour fenêtrer consumption/daily.
+	// Un échec GetUserStatus ne doit pas masquer les ACU déjà récupérés
+	// (REST et siège sont des hôtes distincts).
+	start, end := CycleBounds(now, c.resetDay) // repli local
+	var quota *Quota
+	if q, qerr := c.fetchQuota(); qerr != nil {
+		log.Printf("Devin: quotas GetUserStatus indisponibles : %v", qerr)
+	} else {
+		quota = &q
+		if s, e, ok := planCycle(&q, now); ok {
+			start, end = s, e
+		}
+	}
+
 	body, err := c.getJSON(consumptionURL(orgID, start, cappedEnd(end, now)))
 	if err != nil {
 		return Status{}, err
@@ -267,15 +283,26 @@ func (c *Client) FetchStatus() (Status, error) {
 		return Status{}, err
 	}
 
-	// Quotas jour/semaine : chemin soft. Un échec GetUserStatus ne doit pas
-	// masquer les ACU déjà récupérés (REST et siège sont des hôtes distincts).
-	if q, qerr := c.fetchQuota(); qerr != nil {
-		log.Printf("Devin: quotas GetUserStatus indisponibles : %v", qerr)
-		st.QuotaError = qerr.Error()
-	} else {
-		st.Quota = &q
+	st.Quota = quota
+	if quota == nil {
+		st.QuotaError = "GetUserStatus indisponible (voir logs)"
 	}
 	return st, nil
+}
+
+// planCycle renvoie les bornes planStart/planEnd du plan quand elles courent
+// réellement maintenant. Un cycle qui ne contient pas now (fixture de test,
+// réponse périmée) est ignoré : on retombe sur le repli DEVIN_RESET_DAY plutôt
+// que de fenêtrer la requête sur une période qui n'a aucun sens.
+func planCycle(q *Quota, now time.Time) (start, end time.Time, ok bool) {
+	if q == nil || q.PlanStart == nil || q.PlanEnd == nil {
+		return time.Time{}, time.Time{}, false
+	}
+	start, end = *q.PlanStart, *q.PlanEnd
+	if !start.Before(end) || now.Before(start) || !now.Before(end) {
+		return time.Time{}, time.Time{}, false
+	}
+	return start, end, true
 }
 
 // resolveOrg choisit l'organisation à interroger : la configuration d'abord,
