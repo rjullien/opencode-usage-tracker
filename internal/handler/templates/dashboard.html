@@ -452,7 +452,7 @@
                 {{end}}
                 <div class="lines">
                   <div class="line">
-                    <span class="num">{{$c.Money.IncludedSpend}} / {{$c.Money.IncludedLimit}}</span>
+                    <span class="num">{{$c.Money.IncludedSpend}} / {{$c.Money.IncludedLimit}}{{with $c.Money.IncludedRemaining}} · reste {{.}}{{end}}</span>
                   </div>
                 </div>
               </div>
@@ -473,9 +473,9 @@
                 <div class="lines">
                   <div class="line">
                     {{if $c.Money.HasLimit}}
-                      <span class="num">{{$c.Money.OnDemandSpend}} / {{$c.Money.OnDemandLimit}}</span>
+                      <span class="num">{{$c.Money.OnDemandSpend}} / {{$c.Money.OnDemandLimit}}{{with $c.Money.OnDemandRemaining}} · reste {{.}}{{end}}</span>
                     {{else}}
-                      <span class="num">{{$c.Money.OnDemandSpend}} <span class="muted">(limite inconnue)</span></span>
+                      <span class="num">{{$c.Money.OnDemandSpend}} <span class="muted">(limite inconnue)</span>{{with $c.Money.OnDemandRemaining}} · reste {{.}}{{end}}</span>
                     {{end}}
                   </div>
                 </div>
