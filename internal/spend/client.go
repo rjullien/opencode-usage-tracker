@@ -26,28 +26,52 @@ const (
 	// outer sum adds them up per caller.
 	dedupe = `max without (prometheus_replica, instance, pod, endpoint, service, namespace, container, job)`
 
-	qCost24 = `sum by (virtual_key_name, provider) (` + dedupe + `(increase(bifrost_cost_total[24h])))`
-	qCost7  = `sum by (virtual_key_name, provider) (` + dedupe + `(increase(bifrost_cost_total[7d])))`
-	qIn7    = `sum by (virtual_key_name, provider) (` + dedupe + `(increase(bifrost_input_tokens_total[7d])))`
-	qOut7   = `sum by (virtual_key_name, provider) (` + dedupe + `(increase(bifrost_output_tokens_total[7d])))`
-	qCache7 = `sum by (virtual_key_name, provider) (` + dedupe + `(increase(bifrost_cache_read_input_tokens_total[7d])))`
+	byCaller = `sum by (virtual_key_name, provider, model) (` + dedupe + `(`
+
+	qCost24 = byCaller + `increase(bifrost_cost_total[24h])))`
+	qCost7  = byCaller + `increase(bifrost_cost_total[7d])))`
+	qIn7    = byCaller + `increase(bifrost_input_tokens_total[7d])))`
+	qOut7   = byCaller + `increase(bifrost_output_tokens_total[7d])))`
+	qCache7 = byCaller + `increase(bifrost_cache_read_input_tokens_total[7d])))`
 
 	qHermesCost     = dedupe + `(hermes_cost_usd_total{agent="leo"})`
 	qHermesTokens   = dedupe + `(hermes_tokens_total{agent="leo"})`
 	qHermesSessions = dedupe + `(hermes_sessions_total{agent="leo"})`
 )
 
-// KeySpend is one Bifrost virtual key on one provider.
-type KeySpend struct {
-	VirtualKey  string  `json:"virtualKey"`
-	Provider    string  `json:"provider"`
+// Totals is one consumption bucket. CacheRead7d is a subset of TokensIn7d:
+// Bifrost counts provider prompt tokens in input, and the cached ones again here.
+type Totals struct {
 	Cost24h     float64 `json:"cost24h"`
 	Cost7d      float64 `json:"cost7d"`
 	TokensIn7d  float64 `json:"tokensIn7d"`
 	TokensOut7d float64 `json:"tokensOut7d"`
-	// CacheRead7d is a subset of TokensIn7d: Bifrost counts provider prompt
-	// tokens in input, and the cached ones again here.
 	CacheRead7d float64 `json:"cacheRead7d"`
+}
+
+func (t Totals) zero() bool {
+	return t.Cost24h == 0 && t.Cost7d == 0 && t.TokensIn7d == 0 && t.TokensOut7d == 0 && t.CacheRead7d == 0
+}
+
+// PersonSpend is one virtual key. Providers and models stay folded until the
+// page expands them.
+type PersonSpend struct {
+	VirtualKey string `json:"virtualKey"`
+	Totals
+	Providers []ProviderSpend `json:"providers"`
+}
+
+// ProviderSpend is one provider under a person.
+type ProviderSpend struct {
+	Provider string `json:"provider"`
+	Totals
+	Models []ModelSpend `json:"models"`
+}
+
+// ModelSpend is one model under a provider.
+type ModelSpend struct {
+	Model string `json:"model"`
+	Totals
 }
 
 // LeoUser is one person (or the rolled-up non-Telegram remainder) inside Hermes Leo.
@@ -67,10 +91,10 @@ type LeoUser struct {
 // Report is the consumption snapshot. Error set means nothing else is usable:
 // a partial table would mix a failed window with a live one.
 type Report struct {
-	FetchedAt time.Time  `json:"fetchedAt"`
-	Error     string     `json:"error,omitempty"`
-	Keys      []KeySpend `json:"keys"`
-	Leo       []LeoUser  `json:"leo"`
+	FetchedAt time.Time     `json:"fetchedAt"`
+	Error     string        `json:"error,omitempty"`
+	People    []PersonSpend `json:"people"`
+	Leo       []LeoUser     `json:"leo"`
 	// LeoOther rolls cron, API and TUI into one line. Nil when that remainder is empty.
 	LeoOther *LeoUser `json:"leoOther,omitempty"`
 }
@@ -208,65 +232,87 @@ func (s promSample) value() (float64, bool) {
 }
 
 func assemble(now time.Time, cost24, cost7, in7, out7, cache7, hCost, hTokens, hSessions []sample) *Report {
-	type acc struct {
-		key KeySpend
+	type modelBucket struct{ Totals }
+	type providerBucket struct {
+		Totals
+		models map[string]*modelBucket
 	}
-	keys := map[string]*acc{}
-	touch := func(name, provider string) *acc {
-		name = strings.TrimSpace(name)
+	type personBucket struct {
+		Totals
+		providers map[string]*providerBucket
+	}
+	byPerson := map[string]*personBucket{}
+	add := func(s sample, fn func(*Totals)) {
+		name := strings.TrimSpace(s.labels["virtual_key_name"])
 		if name == "" {
-			return nil
+			return
 		}
-		provider = strings.TrimSpace(provider)
-		id := name + "\x00" + provider
-		a, ok := keys[id]
+		provider := strings.TrimSpace(s.labels["provider"])
+		model := strings.TrimSpace(s.labels["model"])
+		person, ok := byPerson[name]
 		if !ok {
-			a = &acc{key: KeySpend{VirtualKey: name, Provider: provider}}
-			keys[id] = a
+			person = &personBucket{providers: map[string]*providerBucket{}}
+			byPerson[name] = person
 		}
-		return a
+		fn(&person.Totals)
+		prov, ok := person.providers[provider]
+		if !ok {
+			prov = &providerBucket{models: map[string]*modelBucket{}}
+			person.providers[provider] = prov
+		}
+		fn(&prov.Totals)
+		mod, ok := prov.models[model]
+		if !ok {
+			mod = &modelBucket{}
+			prov.models[model] = mod
+		}
+		fn(&mod.Totals)
 	}
 	for _, s := range cost24 {
-		if a := touch(s.labels["virtual_key_name"], s.labels["provider"]); a != nil {
-			a.key.Cost24h += s.value
-		}
+		add(s, func(t *Totals) { t.Cost24h += s.value })
 	}
 	for _, s := range cost7 {
-		if a := touch(s.labels["virtual_key_name"], s.labels["provider"]); a != nil {
-			a.key.Cost7d += s.value
-		}
+		add(s, func(t *Totals) { t.Cost7d += s.value })
 	}
 	for _, s := range in7 {
-		if a := touch(s.labels["virtual_key_name"], s.labels["provider"]); a != nil {
-			a.key.TokensIn7d += s.value
-		}
+		add(s, func(t *Totals) { t.TokensIn7d += s.value })
 	}
 	for _, s := range out7 {
-		if a := touch(s.labels["virtual_key_name"], s.labels["provider"]); a != nil {
-			a.key.TokensOut7d += s.value
-		}
+		add(s, func(t *Totals) { t.TokensOut7d += s.value })
 	}
 	for _, s := range cache7 {
-		if a := touch(s.labels["virtual_key_name"], s.labels["provider"]); a != nil {
-			a.key.CacheRead7d += s.value
-		}
+		add(s, func(t *Totals) { t.CacheRead7d += s.value })
 	}
 
-	rows := make([]KeySpend, 0, len(keys))
-	for _, a := range keys {
-		rows = append(rows, a.key)
+	callers := make([]PersonSpend, 0, len(byPerson))
+	for name, person := range byPerson {
+		if person.zero() {
+			continue
+		}
+		row := PersonSpend{VirtualKey: name, Totals: person.Totals}
+		for provider, prov := range person.providers {
+			if prov.zero() {
+				continue
+			}
+			prow := ProviderSpend{Provider: provider, Totals: prov.Totals}
+			for model, mod := range prov.models {
+				if mod.zero() {
+					continue
+				}
+				prow.Models = append(prow.Models, ModelSpend{Model: model, Totals: mod.Totals})
+			}
+			sort.Slice(prow.Models, func(i, j int) bool {
+				return spendLess(prow.Models[i].Totals, prow.Models[j].Totals, prow.Models[i].Model, prow.Models[j].Model)
+			})
+			row.Providers = append(row.Providers, prow)
+		}
+		sort.Slice(row.Providers, func(i, j int) bool {
+			return spendLess(row.Providers[i].Totals, row.Providers[j].Totals, row.Providers[i].Provider, row.Providers[j].Provider)
+		})
+		callers = append(callers, row)
 	}
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].Cost24h != rows[j].Cost24h {
-			return rows[i].Cost24h > rows[j].Cost24h
-		}
-		if rows[i].Cost7d != rows[j].Cost7d {
-			return rows[i].Cost7d > rows[j].Cost7d
-		}
-		if rows[i].VirtualKey != rows[j].VirtualKey {
-			return rows[i].VirtualKey < rows[j].VirtualKey
-		}
-		return rows[i].Provider < rows[j].Provider
+	sort.Slice(callers, func(i, j int) bool {
+		return spendLess(callers[i].Totals, callers[j].Totals, callers[i].VirtualKey, callers[j].VirtualKey)
 	})
 
 	people := map[string]*LeoUser{}
@@ -331,7 +377,17 @@ func assemble(now time.Time, cost24, cost7, in7, out7, cache7, hCost, hTokens, h
 		return leo[i].User < leo[j].User
 	})
 
-	return &Report{FetchedAt: now, Keys: rows, Leo: leo, LeoOther: other}
+	return &Report{FetchedAt: now, People: callers, Leo: leo, LeoOther: other}
+}
+
+func spendLess(a, b Totals, nameA, nameB string) bool {
+	if a.Cost24h != b.Cost24h {
+		return a.Cost24h > b.Cost24h
+	}
+	if a.Cost7d != b.Cost7d {
+		return a.Cost7d > b.Cost7d
+	}
+	return nameA < nameB
 }
 
 func truncate(s string, max int) string {

@@ -334,6 +334,7 @@ Deux tableaux, deux horloges, qu'on n'additionne pas :
 - **Par clé virtuelle.** `increase()` sur `bifrost_cost_total`,
   `bifrost_input_tokens_total` et `bifrost_output_tokens_total`, groupé par
   `virtual_key_name` et `provider`, plus `bifrost_cache_read_input_tokens_total`.
+  Une ligne par personne. Un clic ouvre les fournisseurs, un second les modèles.
   Colonnes : coût 24 h, coût 7 j, tokens in / cache / out sur 7 j. Le % cache
   est cache ÷ tokens in : chez Bifrost les tokens in incluent déjà le cache.
   Les compteurs Bifrost repartent à zéro au redémarrage du gateway, d'où la

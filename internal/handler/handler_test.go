@@ -831,10 +831,25 @@ func TestSpendSectionRendersKeysAndLeoUsers(t *testing.T) {
 	h := newTestHandler(t)
 	h.UseSpend(stubSpend{r: &spend.Report{
 		FetchedAt: captureNow,
-		Keys: []spend.KeySpend{
-			{VirtualKey: "hermes-lea", Provider: "bedrock", Cost24h: 50.35, Cost7d: 50.35, TokensIn7d: 11.3e6, TokensOut7d: 23000, CacheRead7d: 10.8e6},
-			{VirtualKey: "tailscale-emma", Provider: "opencode-go", Cost24h: 0.25, Cost7d: 0.25, TokensIn7d: 14e6, TokensOut7d: 152000},
-		},
+		People: []spend.PersonSpend{{
+			VirtualKey: "hermes-lea",
+			Totals:     spend.Totals{Cost24h: 50.35, Cost7d: 50.35, TokensIn7d: 11.3e6, TokensOut7d: 23000, CacheRead7d: 10.8e6},
+			Providers: []spend.ProviderSpend{{
+				Provider: "bedrock",
+				Totals:   spend.Totals{Cost24h: 50.35, Cost7d: 50.35, TokensIn7d: 11.3e6, TokensOut7d: 23000, CacheRead7d: 10.8e6},
+				Models: []spend.ModelSpend{{
+					Model:  "claude-opus-5-5",
+					Totals: spend.Totals{Cost24h: 50.35, Cost7d: 50.35, TokensIn7d: 11.3e6, TokensOut7d: 23000, CacheRead7d: 10.8e6},
+				}},
+			}},
+		}, {
+			VirtualKey: "tailscale-emma",
+			Totals:     spend.Totals{Cost24h: 0.25, Cost7d: 0.25, TokensIn7d: 14e6, TokensOut7d: 152000},
+			Providers: []spend.ProviderSpend{{
+				Provider: "opencode-go",
+				Totals:   spend.Totals{Cost24h: 0.25, Cost7d: 0.25, TokensIn7d: 14e6, TokensOut7d: 152000},
+			}},
+		}},
 		Leo: []spend.LeoUser{
 			{User: "Camille Jullien", Source: "telegram", CostUSD: 135.58, TokensIn: 1000, TokensOut: 50, CacheRead: 9000, Sessions: 8},
 		},
@@ -842,7 +857,7 @@ func TestSpendSectionRendersKeysAndLeoUsers(t *testing.T) {
 	}})
 	body := renderDashboard(t, h)
 	mustContain(t, body,
-		"Léa", "Bedrock", "Emma", "OpenCode Go", "50,35 $", "11,3 M", "10,8 M · 96%",
+		"Léa", "Bedrock", "claude-opus-5-5", "Emma", "OpenCode Go", "50,35 $", "11,3 M", "10,8 M · 96%",
 		"Camille Jullien", "9 k · 90%", "hors Telegram", "pas une facture",
 		"Ce n'est pas le coût Bifrost de la clé Léo",
 		"Consommé moyen du parc",
@@ -851,7 +866,7 @@ func TestSpendSectionRendersKeysAndLeoUsers(t *testing.T) {
 
 func TestSpendSectionHiddenWithoutSource(t *testing.T) {
 	body := renderDashboard(t, newTestHandler(t))
-	if strings.Contains(body, "Par clé virtuelle") {
+	if strings.Contains(body, "Par personne") {
 		t.Error("section consommation rendue sans source Prometheus")
 	}
 }
@@ -861,7 +876,7 @@ func TestSpendErrorDoesNotHideQuotas(t *testing.T) {
 	h.UseSpend(stubSpend{r: &spend.Report{FetchedAt: captureNow, Error: "prometheus injoignable: dial tcp"}})
 	body := renderDashboard(t, h)
 	mustContain(t, body, "prometheus injoignable", "Consommé moyen du parc")
-	if strings.Contains(body, "Par clé virtuelle") {
+	if strings.Contains(body, "Par personne") {
 		t.Error("tableaux rendus alors que le scrape a échoué")
 	}
 }
@@ -869,7 +884,7 @@ func TestSpendErrorDoesNotHideQuotas(t *testing.T) {
 func TestAPISpend(t *testing.T) {
 	h := New(emptyPoller{}, nil, nil, nil)
 	h.UseSpend(stubSpend{r: &spend.Report{
-		Keys: []spend.KeySpend{{VirtualKey: "vulcain", Provider: "opencode-go", Cost24h: 1}},
+		People: []spend.PersonSpend{{VirtualKey: "vulcain", Totals: spend.Totals{Cost24h: 1}}},
 	}})
 	rec := httptest.NewRecorder()
 	h.APISpend(rec, httptest.NewRequest(http.MethodGet, "/api/spend", nil))
@@ -880,8 +895,8 @@ func TestAPISpend(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(got.Keys) != 1 || got.Keys[0].VirtualKey != "vulcain" {
-		t.Fatalf("keys = %+v", got.Keys)
+	if len(got.People) != 1 || got.People[0].VirtualKey != "vulcain" {
+		t.Fatalf("people = %+v", got.People)
 	}
 }
 

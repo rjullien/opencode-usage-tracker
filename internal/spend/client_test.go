@@ -16,28 +16,29 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 		switch {
 		case strings.Contains(q, "bifrost_cost_total[24h]"):
 			fmt.Fprint(w, vector(
-				series(50, "virtual_key_name", "hermes-lea", "provider", "bedrock"),
-				series(1, "virtual_key_name", "hermes-leo", "provider", "opencode-go"),
-				series(2, "virtual_key_name", "tailscale-emma", "provider", "opencode-go"),
+				series(50, "virtual_key_name", "hermes-lea", "provider", "bedrock", "model", "claude-opus-5-5"),
+				series(1, "virtual_key_name", "hermes-leo", "provider", "opencode-go", "model", "deepseek-v4.1-flash"),
+				series(2, "virtual_key_name", "tailscale-emma", "provider", "opencode-go", "model", "deepseek-v4.1-flash"),
 			))
 		case strings.Contains(q, "bifrost_cost_total[7d]"):
 			fmt.Fprint(w, vector(
-				series(50, "virtual_key_name", "hermes-lea", "provider", "bedrock"),
-				series(3, "virtual_key_name", "hermes-leo", "provider", "opencode-go"),
-				series(2, "virtual_key_name", "tailscale-emma", "provider", "opencode-go"),
+				series(50, "virtual_key_name", "hermes-lea", "provider", "bedrock", "model", "claude-opus-5-5"),
+				series(3, "virtual_key_name", "hermes-leo", "provider", "opencode-go", "model", "deepseek-v4.1-flash"),
+				series(2, "virtual_key_name", "tailscale-emma", "provider", "opencode-go", "model", "deepseek-v4.1-flash"),
 			))
 		case strings.Contains(q, "bifrost_input_tokens_total"):
 			fmt.Fprint(w, vector(
-				series(11300000, "virtual_key_name", "hermes-lea", "provider", "bedrock"),
-				series(2000000, "virtual_key_name", "hermes-leo", "provider", "opencode-go"),
+				series(11300000, "virtual_key_name", "hermes-lea", "provider", "bedrock", "model", "claude-opus-5-5"),
+				series(1500000, "virtual_key_name", "hermes-leo", "provider", "opencode-go", "model", "deepseek-v4.1-flash"),
+				series(500000, "virtual_key_name", "hermes-leo", "provider", "opencode-go", "model", "mimo-v2.6-pro"),
 			))
 		case strings.Contains(q, "bifrost_output_tokens_total"):
 			fmt.Fprint(w, vector(
-				series(23000, "virtual_key_name", "hermes-lea", "provider", "bedrock"),
+				series(23000, "virtual_key_name", "hermes-lea", "provider", "bedrock", "model", "claude-opus-5-5"),
 			))
 		case strings.Contains(q, "bifrost_cache_read_input_tokens_total"):
 			fmt.Fprint(w, vector(
-				series(10800000, "virtual_key_name", "hermes-lea", "provider", "bedrock"),
+				series(10800000, "virtual_key_name", "hermes-lea", "provider", "bedrock", "model", "claude-opus-5-5"),
 			))
 		case strings.Contains(q, "hermes_cost_usd_total"):
 			fmt.Fprint(w, vector(
@@ -70,18 +71,28 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 	if r.Error != "" {
 		t.Fatalf("error: %s", r.Error)
 	}
-	if len(r.Keys) != 3 {
-		t.Fatalf("keys = %d, want 3 (%+v)", len(r.Keys), r.Keys)
+	if len(r.People) != 3 {
+		t.Fatalf("people = %d, want 3 (%+v)", len(r.People), r.People)
 	}
-	if r.Keys[0].VirtualKey != "hermes-lea" || r.Keys[0].Provider != "bedrock" || r.Keys[0].Cost24h != 50 {
-		t.Fatalf("first key = %+v", r.Keys[0])
+	lea := r.People[0]
+	if lea.VirtualKey != "hermes-lea" || lea.Cost24h != 50 {
+		t.Fatalf("first person = %+v", lea)
 	}
-	if r.Keys[0].TokensIn7d != 11300000 || r.Keys[0].TokensOut7d != 23000 || r.Keys[0].CacheRead7d != 10800000 {
-		t.Fatalf("lea tokens = %+v", r.Keys[0])
+	if lea.TokensIn7d != 11300000 || lea.TokensOut7d != 23000 || lea.CacheRead7d != 10800000 {
+		t.Fatalf("lea tokens = %+v", lea.Totals)
 	}
-	leo := key(r, "hermes-leo", "opencode-go")
-	if leo.Cost7d != 3 || leo.TokensIn7d != 2000000 || leo.TokensOut7d != 0 {
-		t.Fatalf("leo key = %+v", leo)
+	if len(lea.Providers) != 1 || lea.Providers[0].Provider != "bedrock" || len(lea.Providers[0].Models) != 1 || lea.Providers[0].Models[0].Model != "claude-opus-5-5" {
+		t.Fatalf("lea tree = %+v", lea.Providers)
+	}
+	if lea.Providers[0].CacheRead7d != lea.CacheRead7d || lea.Providers[0].Models[0].CacheRead7d != lea.CacheRead7d {
+		t.Fatalf("cache did not roll up: %+v", lea.Providers)
+	}
+	leo := person(r, "hermes-leo")
+	if leo.Cost7d != 3 || leo.TokensIn7d != 2000000 || len(leo.Providers) != 1 || len(leo.Providers[0].Models) != 2 {
+		t.Fatalf("leo = %+v models %+v", leo.Totals, leo.Providers)
+	}
+	if leo.Providers[0].Models[0].Model != "deepseek-v4.1-flash" || leo.Providers[0].Models[1].Model != "mimo-v2.6-pro" {
+		t.Fatalf("leo models = %+v", leo.Providers[0].Models)
 	}
 
 	if len(r.Leo) != 2 {
@@ -109,7 +120,7 @@ func TestFetchPrometheusError(t *testing.T) {
 	if r.Error == "" || !strings.Contains(r.Error, "parse error") {
 		t.Fatalf("error = %q", r.Error)
 	}
-	if len(r.Keys) != 0 || len(r.Leo) != 0 {
+	if len(r.People) != 0 || len(r.Leo) != 0 {
 		t.Fatalf("partial report on error: %+v", r)
 	}
 }
@@ -134,13 +145,13 @@ func TestFetcherCaches(t *testing.T) {
 	}
 }
 
-func key(r *Report, name, provider string) KeySpend {
-	for _, k := range r.Keys {
-		if k.VirtualKey == name && k.Provider == provider {
-			return k
+func person(r *Report, name string) PersonSpend {
+	for _, p := range r.People {
+		if p.VirtualKey == name {
+			return p
 		}
 	}
-	return KeySpend{}
+	return PersonSpend{}
 }
 
 func series(v float64, kv ...string) string {

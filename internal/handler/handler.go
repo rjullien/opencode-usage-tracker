@@ -847,8 +847,8 @@ func fmtCount(v float64) string {
 
 // bifrostCacheCell is "31,2 M · 96%". Bifrost's input counter is the provider
 // prompt total and already includes cached tokens, so the rate is cache ÷ input.
-func bifrostCacheCell(k spend.KeySpend) string {
-	return cacheCell(k.CacheRead7d, k.TokensIn7d)
+func bifrostCacheCell(read, in float64) string {
+	return cacheCell(read, in)
 }
 
 // hermesCacheCell is the same shape. Hermes stores uncached input, cache read
