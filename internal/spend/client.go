@@ -379,6 +379,26 @@ func assembleLeo(hCost, hTokens, hSessions []sample) ([]LeoUser, *LeoUser) {
 		providers map[string]*providerBucket
 	}
 	people := map[string]*personBucket{}
+	// While Prometheus still has the previous exporter's series (no provider),
+	// those would be added on top of the per-model ones. Once a person has a
+	// split, the unlabeled cost and tokens are the old sample and are ignored.
+	split := map[string]bool{}
+	mark := func(s sample) {
+		if strings.TrimSpace(s.labels["provider"]) == "" && strings.TrimSpace(s.labels["model"]) == "" {
+			return
+		}
+		source := strings.TrimSpace(s.labels["source"])
+		if source == "" {
+			source = "unknown"
+		}
+		split[source+"\x00"+strings.TrimSpace(s.labels["user"])] = true
+	}
+	for _, s := range hCost {
+		mark(s)
+	}
+	for _, s := range hTokens {
+		mark(s)
+	}
 	person := func(source, user string) *personBucket {
 		source = strings.TrimSpace(source)
 		user = strings.TrimSpace(user)
@@ -396,12 +416,19 @@ func assembleLeo(hCost, hTokens, hSessions []sample) ([]LeoUser, *LeoUser) {
 	// rollUp is false for per-model session counts: those must not change the
 	// person total, which already counts each session once.
 	add := func(s sample, rollUp bool, fn func(*LeoTotals)) {
+		provider := strings.TrimSpace(s.labels["provider"])
+		model := strings.TrimSpace(s.labels["model"])
+		source := strings.TrimSpace(s.labels["source"])
+		if source == "" {
+			source = "unknown"
+		}
+		if provider == "" && model == "" && split[source+"\x00"+strings.TrimSpace(s.labels["user"])] {
+			return
+		}
 		p := person(s.labels["source"], s.labels["user"])
 		if rollUp {
 			fn(&p.LeoTotals)
 		}
-		provider := strings.TrimSpace(s.labels["provider"])
-		model := strings.TrimSpace(s.labels["model"])
 		if provider == "" && model == "" {
 			return
 		}

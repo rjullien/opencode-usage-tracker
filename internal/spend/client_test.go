@@ -37,6 +37,7 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 		case strings.Contains(q, "hermes_cost_usd_total"):
 			fmt.Fprint(w, vector(
 				series(135, "source", "telegram", "user", "Camille Jullien", "provider", "opencode-go", "model", "deepseek-v4-flash"),
+				series(1000, "source", "telegram", "user", "Camille Jullien"),
 				series(49, "source", "telegram", "user", "Baptiste"),
 				series(3, "source", "cron", "user", "aucun", "provider", "custom", "model", "deepseek-v4-flash"),
 				series(1, "source", "api_server", "user", "aucun", "provider", "opencode-go", "model", "mimo-v2.6-pro"),
@@ -97,7 +98,7 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 		t.Fatalf("leo users = %+v", r.Leo)
 	}
 	camille := r.Leo[0]
-	if camille.User != "Camille Jullien" || camille.TokensIn != 1000 || camille.TokensOut != 50 || camille.CacheRead != 9000 {
+	if camille.User != "Camille Jullien" || camille.CostUSD != 135 || camille.TokensIn != 1000 || camille.TokensOut != 50 || camille.CacheRead != 9000 {
 		t.Fatalf("camille = %+v, cache read must stay out of input", camille)
 	}
 	if camille.Sessions != 8 || len(camille.Providers) != 1 || camille.Providers[0].Provider != "opencode-go" {
