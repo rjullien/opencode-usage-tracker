@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenCode Go — Budget</title>
-<meta http-equiv="refresh" content="120">
 <style>
   :root {
     --bg: #0f1117;
@@ -721,6 +720,86 @@
   {{end}}
 
 </div>
+<script>
+(function () {
+  var every = 120000;
+  var timer = 0;
+
+  function pathOf(node) {
+    var parts = [];
+    var n = node;
+    while (n) {
+      var who = n.querySelector(":scope > summary .who");
+      if (who) parts.unshift(who.textContent.trim());
+      n = n.parentElement ? n.parentElement.closest("details") : null;
+    }
+    return parts.join("\n");
+  }
+
+  function openPaths() {
+    var out = [];
+    document.querySelectorAll(".wrap details[open]").forEach(function (d) {
+      out.push(pathOf(d));
+    });
+    return out;
+  }
+
+  function restore(paths) {
+    var want = {};
+    paths.forEach(function (p) { want[p] = true; });
+    document.querySelectorAll(".wrap details").forEach(function (d) {
+      if (want[pathOf(d)]) d.open = true;
+    });
+  }
+
+  function selectionInside() {
+    var sel = window.getSelection && window.getSelection();
+    if (!sel || sel.isCollapsed) return false;
+    var wrap = document.querySelector(".wrap");
+    return !!(wrap && sel.anchorNode && wrap.contains(sel.anchorNode));
+  }
+
+  function refresh() {
+    if (document.hidden || selectionInside()) return Promise.resolve();
+    return fetch(location.pathname + location.search, { cache: "no-store", credentials: "same-origin" })
+      .then(function (res) {
+        if (!res.ok) return "";
+        return res.text();
+      })
+      .then(function (html) {
+        if (!html) return;
+        var doc = new DOMParser().parseFromString(html, "text/html");
+        var next = doc.querySelector(".wrap");
+        var cur = document.querySelector(".wrap");
+        if (!next || !cur || !next.querySelector(".header")) return;
+        var y = window.scrollY;
+        var paths = openPaths();
+        cur.replaceWith(next);
+        restore(paths);
+        window.scrollTo(0, y);
+      })
+      .catch(function () {});
+  }
+
+  function arm() {
+    clearTimeout(timer);
+    timer = setTimeout(tick, every);
+  }
+
+  function tick() {
+    if (document.hidden) {
+      document.addEventListener("visibilitychange", function () {
+        if (!document.hidden) tick();
+      }, { once: true });
+      return;
+    }
+    refresh().then(arm, arm);
+  }
+
+  arm();
+  window.__refreshDashboard = refresh;
+})();
+</script>
 </body>
 </html>
 

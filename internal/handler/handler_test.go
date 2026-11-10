@@ -297,6 +297,14 @@ func TestUnknownPathIs404(t *testing.T) {
 // Nothing on the page may depend on a font shipping arrows, geometric shapes or
 // emoji. Minimal and headless browsers draw those as empty boxes, and the traffic
 // light is the primary signal of the whole dashboard.
+func TestPageRefreshesDataInPlace(t *testing.T) {
+	body := renderDashboard(t, newTestHandler(t))
+	if strings.Contains(body, `http-equiv="refresh"`) {
+		t.Fatal("la page se recharge encore en entier")
+	}
+	mustContain(t, body, "DOMParser", `details[open]`, "scrollY", "__refreshDashboard")
+}
+
 func TestPageAvoidsFontDependentGlyphs(t *testing.T) {
 	body := renderDashboard(t, newTestHandler(t))
 
