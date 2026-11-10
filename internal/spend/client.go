@@ -71,17 +71,40 @@ type ModelSpend struct {
 }
 
 // LeoUser is one person (or the rolled-up non-Telegram remainder) inside Hermes Leo.
+// Providers is empty when the series have no provider or model label.
 type LeoUser struct {
-	User      string  `json:"user"`
-	Source    string  `json:"source"`
-	CostUSD   float64 `json:"costUsd"`
-	TokensIn  float64 `json:"tokensIn"`
-	TokensOut float64 `json:"tokensOut"`
-	// CacheRead and CacheWrite are disjoint from TokensIn. Hermes stores the
-	// uncached prompt tail in input and the cached prefix beside it.
+	User   string `json:"user"`
+	Source string `json:"source"`
+	LeoTotals
+	Providers []LeoProvider `json:"providers,omitempty"`
+}
+
+// LeoTotals is one Hermes bucket. CacheRead and CacheWrite are disjoint from
+// TokensIn: Hermes stores the uncached prompt tail in input.
+type LeoTotals struct {
+	CostUSD    float64 `json:"costUsd"`
+	TokensIn   float64 `json:"tokensIn"`
+	TokensOut  float64 `json:"tokensOut"`
 	CacheRead  float64 `json:"cacheRead"`
 	CacheWrite float64 `json:"cacheWrite"`
 	Sessions   float64 `json:"sessions"`
+}
+
+// LeoProvider is one provider under a Hermes person.
+type LeoProvider struct {
+	Provider string `json:"provider"`
+	LeoTotals
+	Models []LeoModel `json:"models"`
+}
+
+// LeoModel is one model under a Hermes provider.
+type LeoModel struct {
+	Model string `json:"model"`
+	LeoTotals
+}
+
+func (t LeoTotals) empty() bool {
+	return t.CostUSD == 0 && t.TokensIn == 0 && t.TokensOut == 0 && t.CacheRead == 0 && t.CacheWrite == 0 && t.Sessions == 0
 }
 
 // Report is the consumption snapshot. Error set means nothing else is usable:
@@ -335,8 +358,28 @@ func assemble(now time.Time, cost, in, out, cache, hCost, hTokens, hSessions []s
 		return spendLess(callers[i].Totals, callers[j].Totals, callers[i].VirtualKey, callers[j].VirtualKey)
 	})
 
-	people := map[string]*LeoUser{}
-	person := func(source, user string) *LeoUser {
+	leo, other := assembleLeo(hCost, hTokens, hSessions)
+	return &Report{FetchedAt: now, People: callers, Leo: leo, LeoOther: other}
+}
+
+// assembleLeo builds the Telegram tree. A sample without provider and model
+// stays on the person (the exporter before the split, and the per-user
+// session count). A sample with either label also feeds that provider and model.
+// Model session counts are not added to the person: one session can use
+// several models, and the person total counts each session once.
+func assembleLeo(hCost, hTokens, hSessions []sample) ([]LeoUser, *LeoUser) {
+	type modelBucket struct{ LeoTotals }
+	type providerBucket struct {
+		LeoTotals
+		models map[string]*modelBucket
+	}
+	type personBucket struct {
+		source, user string
+		LeoTotals
+		providers map[string]*providerBucket
+	}
+	people := map[string]*personBucket{}
+	person := func(source, user string) *personBucket {
 		source = strings.TrimSpace(source)
 		user = strings.TrimSpace(user)
 		if source == "" {
@@ -345,50 +388,140 @@ func assemble(now time.Time, cost, in, out, cache, hCost, hTokens, hSessions []s
 		id := source + "\x00" + user
 		p, ok := people[id]
 		if !ok {
-			p = &LeoUser{Source: source, User: user}
+			p = &personBucket{source: source, user: user, providers: map[string]*providerBucket{}}
 			people[id] = p
 		}
 		return p
 	}
+	// rollUp is false for per-model session counts: those must not change the
+	// person total, which already counts each session once.
+	add := func(s sample, rollUp bool, fn func(*LeoTotals)) {
+		p := person(s.labels["source"], s.labels["user"])
+		if rollUp {
+			fn(&p.LeoTotals)
+		}
+		provider := strings.TrimSpace(s.labels["provider"])
+		model := strings.TrimSpace(s.labels["model"])
+		if provider == "" && model == "" {
+			return
+		}
+		if provider == "" {
+			provider = "inconnu"
+		}
+		prov, ok := p.providers[provider]
+		if !ok {
+			prov = &providerBucket{models: map[string]*modelBucket{}}
+			p.providers[provider] = prov
+		}
+		fn(&prov.LeoTotals)
+		if model == "" {
+			model = "inconnu"
+		}
+		mod, ok := prov.models[model]
+		if !ok {
+			mod = &modelBucket{}
+			prov.models[model] = mod
+		}
+		fn(&mod.LeoTotals)
+	}
 	for _, s := range hCost {
-		person(s.labels["source"], s.labels["user"]).CostUSD += s.value
+		add(s, true, func(t *LeoTotals) { t.CostUSD += s.value })
 	}
 	for _, s := range hTokens {
-		p := person(s.labels["source"], s.labels["user"])
+		var fn func(*LeoTotals)
 		switch s.labels["type"] {
 		case "input":
-			p.TokensIn += s.value
+			fn = func(t *LeoTotals) { t.TokensIn += s.value }
 		case "output":
-			p.TokensOut += s.value
+			fn = func(t *LeoTotals) { t.TokensOut += s.value }
 		case "cache_read":
-			p.CacheRead += s.value
+			fn = func(t *LeoTotals) { t.CacheRead += s.value }
 		case "cache_write":
-			p.CacheWrite += s.value
+			fn = func(t *LeoTotals) { t.CacheWrite += s.value }
+		default:
+			continue
 		}
+		add(s, true, fn)
 	}
 	for _, s := range hSessions {
-		person(s.labels["source"], s.labels["user"]).Sessions += s.value
+		provider := strings.TrimSpace(s.labels["provider"])
+		model := strings.TrimSpace(s.labels["model"])
+		if provider == "" && model == "" {
+			person(s.labels["source"], s.labels["user"]).Sessions += s.value
+			continue
+		}
+		add(s, false, func(t *LeoTotals) { t.Sessions += s.value })
+	}
+
+	finish := func(p *personBucket) LeoUser {
+		row := LeoUser{User: p.user, Source: p.source, LeoTotals: p.LeoTotals}
+		for provider, prov := range p.providers {
+			if prov.empty() {
+				continue
+			}
+			prow := LeoProvider{Provider: provider, LeoTotals: prov.LeoTotals}
+			for model, mod := range prov.models {
+				if mod.empty() {
+					continue
+				}
+				prow.Models = append(prow.Models, LeoModel{Model: model, LeoTotals: mod.LeoTotals})
+			}
+			sort.Slice(prow.Models, func(i, j int) bool {
+				return leoLess(prow.Models[i].LeoTotals, prow.Models[j].LeoTotals, prow.Models[i].Model, prow.Models[j].Model)
+			})
+			row.Providers = append(row.Providers, prow)
+		}
+		sort.Slice(row.Providers, func(i, j int) bool {
+			return leoLess(row.Providers[i].LeoTotals, row.Providers[j].LeoTotals, row.Providers[i].Provider, row.Providers[j].Provider)
+		})
+		return row
 	}
 
 	var leo []LeoUser
-	var other *LeoUser
+	var other *personBucket
 	for _, p := range people {
-		if p.CostUSD == 0 && p.TokensIn == 0 && p.TokensOut == 0 && p.CacheRead == 0 && p.CacheWrite == 0 && p.Sessions == 0 {
+		if p.empty() && len(p.providers) == 0 {
 			continue
 		}
-		if p.Source == "telegram" {
-			leo = append(leo, *p)
+		if p.source == "telegram" {
+			leo = append(leo, finish(p))
 			continue
 		}
 		if other == nil {
-			other = &LeoUser{Source: "other"}
+			other = &personBucket{source: "other", providers: map[string]*providerBucket{}}
 		}
-		other.CostUSD += p.CostUSD
+		other.LeoTotals.CostUSD += p.CostUSD
 		other.TokensIn += p.TokensIn
 		other.TokensOut += p.TokensOut
 		other.CacheRead += p.CacheRead
 		other.CacheWrite += p.CacheWrite
 		other.Sessions += p.Sessions
+		for provider, prov := range p.providers {
+			dst, ok := other.providers[provider]
+			if !ok {
+				dst = &providerBucket{models: map[string]*modelBucket{}}
+				other.providers[provider] = dst
+			}
+			dst.CostUSD += prov.CostUSD
+			dst.TokensIn += prov.TokensIn
+			dst.TokensOut += prov.TokensOut
+			dst.CacheRead += prov.CacheRead
+			dst.CacheWrite += prov.CacheWrite
+			dst.Sessions += prov.Sessions
+			for model, mod := range prov.models {
+				dm, ok := dst.models[model]
+				if !ok {
+					dm = &modelBucket{}
+					dst.models[model] = dm
+				}
+				dm.CostUSD += mod.CostUSD
+				dm.TokensIn += mod.TokensIn
+				dm.TokensOut += mod.TokensOut
+				dm.CacheRead += mod.CacheRead
+				dm.CacheWrite += mod.CacheWrite
+				dm.Sessions += mod.Sessions
+			}
+		}
 	}
 	sort.Slice(leo, func(i, j int) bool {
 		if leo[i].CostUSD != leo[j].CostUSD {
@@ -396,8 +529,18 @@ func assemble(now time.Time, cost, in, out, cache, hCost, hTokens, hSessions []s
 		}
 		return leo[i].User < leo[j].User
 	})
+	if other == nil {
+		return leo, nil
+	}
+	folded := finish(other)
+	return leo, &folded
+}
 
-	return &Report{FetchedAt: now, People: callers, Leo: leo, LeoOther: other}
+func leoLess(a, b LeoTotals, nameA, nameB string) bool {
+	if a.CostUSD != b.CostUSD {
+		return a.CostUSD > b.CostUSD
+	}
+	return nameA < nameB
 }
 
 func spendLess(a, b Totals, nameA, nameB string) bool {

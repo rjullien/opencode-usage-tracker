@@ -854,8 +854,8 @@ func bifrostCacheCell(read, in float64) string {
 // hermesCacheCell is the same shape. Hermes stores uncached input, cache read
 // and cache write as separate buckets, so the rate is
 // cache read ÷ (input + cache read + cache write).
-func hermesCacheCell(u spend.LeoUser) string {
-	return cacheCell(u.CacheRead, u.TokensIn+u.CacheRead+u.CacheWrite)
+func hermesCacheCell(read, in, write float64) string {
+	return cacheCell(read, in+read+write)
 }
 
 func cacheCell(read, total float64) string {
@@ -898,8 +898,12 @@ func providerLabel(p string) string {
 		return "Bedrock"
 	case "gemini":
 		return "Gemini"
+	case "github-copilot":
+		return "GitHub Copilot"
 	case "groq":
 		return "Groq"
+	case "openrouter":
+		return "OpenRouter"
 	case "":
 		return "inconnu"
 	default:

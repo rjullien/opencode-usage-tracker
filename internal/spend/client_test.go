@@ -36,22 +36,23 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 			))
 		case strings.Contains(q, "hermes_cost_usd_total"):
 			fmt.Fprint(w, vector(
-				series(135, "source", "telegram", "user", "Camille Jullien"),
+				series(135, "source", "telegram", "user", "Camille Jullien", "provider", "opencode-go", "model", "deepseek-v4-flash"),
 				series(49, "source", "telegram", "user", "Baptiste"),
-				series(3, "source", "cron", "user", "aucun"),
-				series(1, "source", "api_server", "user", "aucun"),
+				series(3, "source", "cron", "user", "aucun", "provider", "custom", "model", "deepseek-v4-flash"),
+				series(1, "source", "api_server", "user", "aucun", "provider", "opencode-go", "model", "mimo-v2.6-pro"),
 			))
 		case strings.Contains(q, "hermes_tokens_total"):
 			fmt.Fprint(w, vector(
-				series(1000, "source", "telegram", "user", "Camille Jullien", "type", "input"),
-				series(9000, "source", "telegram", "user", "Camille Jullien", "type", "cache_read"),
-				series(50, "source", "telegram", "user", "Camille Jullien", "type", "output"),
-				series(10, "source", "cron", "user", "aucun", "type", "input"),
-				series(40, "source", "cron", "user", "aucun", "type", "cache_read"),
+				series(1000, "source", "telegram", "user", "Camille Jullien", "provider", "opencode-go", "model", "deepseek-v4-flash", "type", "input"),
+				series(9000, "source", "telegram", "user", "Camille Jullien", "provider", "opencode-go", "model", "deepseek-v4-flash", "type", "cache_read"),
+				series(50, "source", "telegram", "user", "Camille Jullien", "provider", "opencode-go", "model", "deepseek-v4-flash", "type", "output"),
+				series(10, "source", "cron", "user", "aucun", "provider", "custom", "model", "deepseek-v4-flash", "type", "input"),
+				series(40, "source", "cron", "user", "aucun", "provider", "custom", "model", "deepseek-v4-flash", "type", "cache_read"),
 			))
 		case strings.Contains(q, "hermes_sessions_total"):
 			fmt.Fprint(w, vector(
 				series(8, "source", "telegram", "user", "Camille Jullien"),
+				series(5, "source", "telegram", "user", "Camille Jullien", "provider", "opencode-go", "model", "deepseek-v4-flash"),
 				series(170, "source", "cron", "user", "aucun"),
 				series(3, "source", "tui", "user", "aucun"),
 			))
@@ -95,14 +96,27 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 	if len(r.Leo) != 2 {
 		t.Fatalf("leo users = %+v", r.Leo)
 	}
-	if r.Leo[0].User != "Camille Jullien" || r.Leo[0].TokensIn != 1000 || r.Leo[0].TokensOut != 50 || r.Leo[0].CacheRead != 9000 {
-		t.Fatalf("camille = %+v, cache read must stay out of input", r.Leo[0])
+	camille := r.Leo[0]
+	if camille.User != "Camille Jullien" || camille.TokensIn != 1000 || camille.TokensOut != 50 || camille.CacheRead != 9000 {
+		t.Fatalf("camille = %+v, cache read must stay out of input", camille)
 	}
-	if r.Leo[1].User != "Baptiste" {
+	if camille.Sessions != 8 || len(camille.Providers) != 1 || camille.Providers[0].Provider != "opencode-go" {
+		t.Fatalf("camille tree = %+v", camille)
+	}
+	if camille.Providers[0].Sessions != 5 || len(camille.Providers[0].Models) != 1 || camille.Providers[0].Models[0].Model != "deepseek-v4-flash" || camille.Providers[0].Models[0].Sessions != 5 {
+		t.Fatalf("camille model = %+v", camille.Providers)
+	}
+	if r.Leo[1].User != "Baptiste" || len(r.Leo[1].Providers) != 0 {
 		t.Fatalf("second user = %+v", r.Leo[1])
 	}
 	if r.LeoOther == nil || r.LeoOther.CostUSD != 4 || r.LeoOther.TokensIn != 10 || r.LeoOther.CacheRead != 40 || r.LeoOther.Sessions != 173 {
 		t.Fatalf("other = %+v", r.LeoOther)
+	}
+	if len(r.LeoOther.Providers) != 2 || r.LeoOther.Providers[0].Provider != "custom" || r.LeoOther.Providers[1].Provider != "opencode-go" {
+		t.Fatalf("other providers = %+v", r.LeoOther.Providers)
+	}
+	if r.LeoOther.Providers[0].TokensIn != 10 || r.LeoOther.Providers[0].Models[0].Model != "deepseek-v4-flash" {
+		t.Fatalf("other model = %+v", r.LeoOther.Providers[0])
 	}
 }
 

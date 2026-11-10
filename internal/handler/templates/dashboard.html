@@ -252,6 +252,7 @@
   .spend-table th.num, .spend-table td.num { text-align: right; white-space: nowrap; }
   .spend-section .hero-note { margin-top: 0.45rem; }
   .spend-tree { min-width: 640px; }
+  .spend-tree.with-sessions { min-width: 760px; }
   .spend-line {
     display: grid;
     grid-template-columns: minmax(9rem, 1.6fr) repeat(4, minmax(5.2rem, 1fr));
@@ -259,6 +260,9 @@
     align-items: center;
     padding: 0.42rem 0.15rem;
     border-bottom: 1px solid var(--border);
+  }
+  .spend-line.with-sessions {
+    grid-template-columns: minmax(9rem, 1.4fr) repeat(5, minmax(4.5rem, 1fr));
   }
   .spend-line.hd {
     color: var(--muted);
@@ -682,46 +686,30 @@
           <h4>Léo — personnes Telegram</h4>
           {{if or $s.Leo $s.LeoOther}}
             <div class="spend-scroll">
-              <table class="spend-table">
-                <thead>
-                  <tr>
-                    <th>Personne</th>
-                    <th class="num">Coût</th>
-                    <th class="num">Tokens in</th>
-                    <th class="num">Cache</th>
-                    <th class="num">Tokens out</th>
-                    <th class="num">Sessions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {{range $s.Leo}}
-                    <tr>
-                      <td>{{.User}}</td>
-                      <td class="num">{{fmtUSDf .CostUSD}}</td>
-                      <td class="num">{{fmtTokens .TokensIn}}</td>
-                      <td class="num">{{hermesCache .}}</td>
-                      <td class="num">{{fmtTokens .TokensOut}}</td>
-                      <td class="num">{{fmtCount .Sessions}}</td>
-                    </tr>
-                  {{end}}
-                  {{with $s.LeoOther}}
-                    <tr>
-                      <td>hors Telegram</td>
-                      <td class="num">{{fmtUSDf .CostUSD}}</td>
-                      <td class="num">{{fmtTokens .TokensIn}}</td>
-                      <td class="num">{{hermesCache .}}</td>
-                      <td class="num">{{fmtTokens .TokensOut}}</td>
-                      <td class="num">{{fmtCount .Sessions}}</td>
-                    </tr>
-                  {{end}}
-                </tbody>
-              </table>
+              <div class="spend-tree with-sessions">
+                <div class="spend-line with-sessions hd">
+                  <span>Personne</span>
+                  <span class="num">Coût</span>
+                  <span class="num">Tokens in</span>
+                  <span class="num">Cache</span>
+                  <span class="num">Tokens out</span>
+                  <span class="num">Sessions</span>
+                </div>
+                {{range $s.Leo}}
+                  {{template "leoPerson" .}}
+                {{end}}
+                {{with $s.LeoOther}}
+                  {{template "leoPerson" .}}
+                {{end}}
+              </div>
             </div>
           {{else}}
             <div class="hero-note">Aucune session Hermes.</div>
           {{end}}
           <div class="hero-note">
-            Cumul enregistré par Hermes (state.db), estimation Hermes.
+            Cumul enregistré par Hermes, ventilé par fournisseur et par modèle.
+            Le coût d'une personne est la somme de ses modèles.
+            Les sessions en tête comptent chaque session une fois ; un modèle compte les sessions qui l'ont utilisé.
             Ce n'est pas le coût Bifrost de la clé Léo.
             Le % cache est cache ÷ (tokens in + cache) : ici les tokens in n'incluent pas le cache.
           </div>
@@ -741,6 +729,48 @@
   <span class="num">{{fmtTokens .TokensIn}}</span>
   <span class="num">{{bifrostCache .CacheRead .TokensIn}}</span>
   <span class="num">{{fmtTokens .TokensOut}}</span>
+{{end}}
+
+{{define "leoNums"}}
+  <span class="num">{{fmtUSDf .CostUSD}}</span>
+  <span class="num">{{fmtTokens .TokensIn}}</span>
+  <span class="num">{{hermesCache .CacheRead .TokensIn .CacheWrite}}</span>
+  <span class="num">{{fmtTokens .TokensOut}}</span>
+  <span class="num">{{fmtCount .Sessions}}</span>
+{{end}}
+
+{{define "leoPerson"}}
+  {{if .Providers}}
+    <details class="spend-person">
+      <summary>
+        <div class="spend-line with-sessions">
+          <span class="who">{{if eq .Source "other"}}hors Telegram{{else}}{{.User}}{{end}}</span>
+          {{template "leoNums" .}}
+        </div>
+      </summary>
+      {{range .Providers}}
+        <details class="spend-provider">
+          <summary>
+            <div class="spend-line with-sessions">
+              <span class="who">{{provLabel .Provider}}</span>
+              {{template "leoNums" .}}
+            </div>
+          </summary>
+          {{range .Models}}
+            <div class="spend-line with-sessions spend-model">
+              <span class="who">{{if .Model}}{{.Model}}{{else}}sans modèle{{end}}</span>
+              {{template "leoNums" .}}
+            </div>
+          {{end}}
+        </details>
+      {{end}}
+    </details>
+  {{else}}
+    <div class="spend-line with-sessions">
+      <span class="who">{{if eq .Source "other"}}hors Telegram{{else}}{{.User}}{{end}}</span>
+      {{template "leoNums" .}}
+    </div>
+  {{end}}
 {{end}}
 
 {{/* ---------------- Bloc fenêtre réutilisable ---------------- */}}

@@ -343,11 +343,16 @@ Deux tableaux, deux horloges, qu'on n'additionne pas :
   imputé au forfait, pas une facture. Le $ Bedrock est réel. Une clé inconnue
   s'affiche sous son id.
 - **Léo, par personne Telegram.** Valeur courante de `hermes_cost_usd_total`,
-  `hermes_tokens_total` et `hermes_sessions_total` (`agent="leo"`). L'exporter
-  republie le cumul de `state.db` (`input`, `cache_read`, `cache_write`, `output`).
+  `hermes_tokens_total` et `hermes_sessions_total` (`agent="leo"`), avec les
+  labels `provider` et `model` quand l'exporter les publie. Un clic ouvre les
+  fournisseurs, un second les modèles, comme pour Bifrost. Sans ces labels la
+  ligne reste plate. Le cumul vient de `state.db` (`input`, `cache_read`,
+  `cache_write`, `output`), ventilé par la route qui a servi les tokens.
   Le % cache est cache ÷ (tokens in + cache) : ici les tokens in n'incluent
-  pas le cache. Cron, API et TUI tiennent sur une ligne
-  « hors Telegram ». Ce cumul n'est pas le coût Bifrost de la clé `hermes-leo`.
+  pas le cache. Les sessions en tête de personne comptent chaque session une
+  fois ; un modèle compte les sessions qui l'ont utilisé. Cron, API et TUI
+  tiennent sur une ligne « hors Telegram ». Ce cumul n'est pas le coût Bifrost
+  de la clé `hermes-leo`.
 
 Les noms Telegram viennent de Prometheus au moment du rendu. Ils ne sont pas
 dans ce dépôt. Le cache est le même `CACHE_TTL` que le reste de la page.

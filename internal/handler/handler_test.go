@@ -852,15 +852,26 @@ func TestSpendSectionRendersKeysAndLeoUsers(t *testing.T) {
 			}},
 		}},
 		Leo: []spend.LeoUser{
-			{User: "Camille Jullien", Source: "telegram", CostUSD: 135.58, TokensIn: 1000, TokensOut: 50, CacheRead: 9000, Sessions: 8},
+			{
+				User: "Camille Jullien", Source: "telegram",
+				LeoTotals: spend.LeoTotals{CostUSD: 135.58, TokensIn: 1000, TokensOut: 50, CacheRead: 9000, Sessions: 8},
+				Providers: []spend.LeoProvider{{
+					Provider:  "opencode-go",
+					LeoTotals: spend.LeoTotals{CostUSD: 135.58, TokensIn: 1000, TokensOut: 50, CacheRead: 9000, Sessions: 5},
+					Models: []spend.LeoModel{{
+						Model:     "deepseek-v4-flash",
+						LeoTotals: spend.LeoTotals{CostUSD: 135.58, TokensIn: 1000, TokensOut: 50, CacheRead: 9000, Sessions: 5},
+					}},
+				}},
+			},
 		},
-		LeoOther: &spend.LeoUser{Source: "other", CostUSD: 4, Sessions: 173},
+		LeoOther: &spend.LeoUser{Source: "other", LeoTotals: spend.LeoTotals{CostUSD: 4, Sessions: 173}},
 	}})
 	body := renderDashboard(t, h)
 	mustContain(t, body,
 		"Léa", "Bedrock", "claude-opus-5-5", "Emma", "OpenCode Go", "50,35 $", "11,3 M", "10,8 M · 96%",
 		"Depuis le 01/11",
-		"Camille Jullien", "9 k · 90%", "hors Telegram", "pas une facture",
+		"Camille Jullien", "deepseek-v4-flash", "9 k · 90%", "hors Telegram", "pas une facture",
 		"Ce n'est pas le coût Bifrost de la clé Léo",
 		"Consommé moyen du parc",
 	)
