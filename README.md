@@ -104,6 +104,7 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 | `GET /api/usage` | JSON des quotas OpenCode, enrichi du budget calculé |
 | `GET /api/devin` | JSON du quota ACU Devin (404 si non configuré) |
 | `GET /api/cursor` | JSON Cursor + Grok Bot (404 si non configuré) |
+| `GET /api/spend` | JSON consommation Bifrost + personnes Telegram de Léo (404 si non configuré) |
 | `GET /health` | Health check (`{"status":"ok"}`) |
 
 `/api/usage` conserve les champs existants (`label`, `windows`, `error`, `fetchedAt`, et par fenêtre
@@ -137,6 +138,7 @@ jours après l'arrêt. Un vrai rythme glissant demanderait de la persistance.
 | `DEVIN_API_SERVER` | `https://server.codeium.com` | Hôte Connect-RPC pour `GetUserStatus` (quotas jour/semaine) |
 | `CURSOR_API_KEY` | — | Clé API utilisateur Cursor `crsr_…` (optionnel, **canonique**) — active la **section Cursor + Grok Bot**. Créée dans Cursor Dashboard → API Keys ; stockée dans Infisical ; l'access JWT est dérivé en mémoire via `exchange_user_api_key` |
 | `CURSOR_REFRESH_TOKEN` | — | Refresh OAuth Cursor (optionnel, historique). Si la valeur commence par `crsr_`, elle est traitée comme une clé API (filet de sécurité). Sinon : refresh via `/oauth/token` |
+| `PROMETHEUS_URL` | — | Origine de Prometheus long terme, sans chemin. Vide : la section consommation est absente. En cluster : `http://prometheus-longterm.monitoring.svc.cluster.local:9090` |
 
 Toute variable commençant par `OPENCODE_GO_API_KEY` est découverte automatiquement, et le label
 d'affichage est déduit du suffixe : `OPENCODE_GO_API_KEY_R` s'affiche « R »,
@@ -320,6 +322,29 @@ montant seul + « (limite inconnue) ».
 
 ⚠️ Structure issue de la doc community (OpenUsage / AI-Usage) et du parsing
 local mocké — endpoints non officiels. Non validé ici contre un compte live.
+
+### Section consommation (Bifrost + Hermes Léo)
+
+Sans `PROMETHEUS_URL`, rien ne change : la section est absente et `/api/spend` répond 404.
+Avec l'URL, une carte **Consommation** apparaît sous les quotas. Un Prometheus
+injoignable n'empêche pas le rendu OpenCode, Devin ou Cursor.
+
+Deux tableaux, deux horloges, qu'on n'additionne pas :
+
+- **Par clé virtuelle.** `increase()` sur `bifrost_cost_total`,
+  `bifrost_input_tokens_total` et `bifrost_output_tokens_total`, groupé par
+  `virtual_key_name` et `provider`. Colonnes : coût 24 h, coût 7 j, tokens 7 j.
+  Les compteurs Bifrost repartent à zéro au redémarrage du gateway, d'où la
+  fenêtre plutôt que la valeur brute. Le $ OpenCode Go est le prix catalogue
+  imputé au forfait, pas une facture. Le $ Bedrock est réel. Une clé inconnue
+  s'affiche sous son id.
+- **Léo, par personne Telegram.** Valeur courante de `hermes_cost_usd_total`,
+  `hermes_tokens_total` et `hermes_sessions_total` (`agent="leo"`). L'exporter
+  republie le cumul de `state.db`. Cron, API et TUI tiennent sur une ligne
+  « hors Telegram ». Ce cumul n'est pas le coût Bifrost de la clé `hermes-leo`.
+
+Les noms Telegram viennent de Prometheus au moment du rendu. Ils ne sont pas
+dans ce dépôt. Le cache est le même `CACHE_TTL` que le reste de la page.
 
 ## Développement local
 

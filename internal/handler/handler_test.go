@@ -14,6 +14,7 @@ import (
 	"github.com/rjullien/opencode-usage-tracker/internal/cursor"
 	"github.com/rjullien/opencode-usage-tracker/internal/devin"
 	"github.com/rjullien/opencode-usage-tracker/internal/opencode"
+	"github.com/rjullien/opencode-usage-tracker/internal/spend"
 )
 
 // The instant the reference payload below was captured from the live dashboard.
@@ -825,3 +826,74 @@ func TestAPICursorNotFoundWithoutSource(t *testing.T) {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
 }
+
+func TestSpendSectionRendersKeysAndLeoUsers(t *testing.T) {
+	h := newTestHandler(t)
+	h.UseSpend(stubSpend{r: &spend.Report{
+		FetchedAt: captureNow,
+		Keys: []spend.KeySpend{
+			{VirtualKey: "hermes-lea", Provider: "bedrock", Cost24h: 50.35, Cost7d: 50.35, TokensIn7d: 11.3e6, TokensOut7d: 23000},
+			{VirtualKey: "tailscale-emma", Provider: "opencode-go", Cost24h: 0.25, Cost7d: 0.25, TokensIn7d: 14e6, TokensOut7d: 152000},
+		},
+		Leo: []spend.LeoUser{
+			{User: "Camille Jullien", Source: "telegram", CostUSD: 135.58, TokensIn: 1000, TokensOut: 50, Sessions: 8},
+		},
+		LeoOther: &spend.LeoUser{Source: "other", CostUSD: 4, Sessions: 173},
+	}})
+	body := renderDashboard(t, h)
+	mustContain(t, body,
+		"Léa", "Bedrock", "Emma", "OpenCode Go", "50,35 $", "11,3 M",
+		"Camille Jullien", "hors Telegram", "pas une facture",
+		"Ce n'est pas le coût Bifrost de la clé Léo",
+		"Consommé moyen du parc",
+	)
+}
+
+func TestSpendSectionHiddenWithoutSource(t *testing.T) {
+	body := renderDashboard(t, newTestHandler(t))
+	if strings.Contains(body, "Par clé virtuelle") {
+		t.Error("section consommation rendue sans source Prometheus")
+	}
+}
+
+func TestSpendErrorDoesNotHideQuotas(t *testing.T) {
+	h := newTestHandler(t)
+	h.UseSpend(stubSpend{r: &spend.Report{FetchedAt: captureNow, Error: "prometheus injoignable: dial tcp"}})
+	body := renderDashboard(t, h)
+	mustContain(t, body, "prometheus injoignable", "Consommé moyen du parc")
+	if strings.Contains(body, "Par clé virtuelle") {
+		t.Error("tableaux rendus alors que le scrape a échoué")
+	}
+}
+
+func TestAPISpend(t *testing.T) {
+	h := New(emptyPoller{}, nil, nil, nil)
+	h.UseSpend(stubSpend{r: &spend.Report{
+		Keys: []spend.KeySpend{{VirtualKey: "vulcain", Provider: "opencode-go", Cost24h: 1}},
+	}})
+	rec := httptest.NewRecorder()
+	h.APISpend(rec, httptest.NewRequest(http.MethodGet, "/api/spend", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var got spend.Report
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(got.Keys) != 1 || got.Keys[0].VirtualKey != "vulcain" {
+		t.Fatalf("keys = %+v", got.Keys)
+	}
+}
+
+func TestAPISpendNotFoundWithoutSource(t *testing.T) {
+	h := New(emptyPoller{}, nil, nil, nil)
+	rec := httptest.NewRecorder()
+	h.APISpend(rec, httptest.NewRequest(http.MethodGet, "/api/spend", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+type stubSpend struct{ r *spend.Report }
+
+func (s stubSpend) Report() *spend.Report { return s.r }

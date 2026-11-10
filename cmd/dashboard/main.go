@@ -11,6 +11,7 @@ import (
 	"github.com/rjullien/opencode-usage-tracker/internal/devin"
 	"github.com/rjullien/opencode-usage-tracker/internal/handler"
 	"github.com/rjullien/opencode-usage-tracker/internal/opencode"
+	"github.com/rjullien/opencode-usage-tracker/internal/spend"
 )
 
 func main() {
@@ -85,11 +86,22 @@ func main() {
 
 	h := handler.New(fetcher, weights, devSrc, curSrc)
 
+	// Consommation par clé virtuelle et par personne Telegram de Léo.
+	// Sans PROMETHEUS_URL la section est absente : le dashboard reste
+	// utilisable en local sans Prometheus.
+	if promURL := os.Getenv("PROMETHEUS_URL"); promURL != "" {
+		h.UseSpend(spend.NewFetcher(spend.NewClient(promURL, 8*time.Second), cacheTTL))
+		log.Printf("Prometheus spend source: %s", promURL)
+	} else {
+		log.Printf("Prometheus spend source: absente (pas de PROMETHEUS_URL)")
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.Dashboard)
 	mux.HandleFunc("/api/usage", h.APIUsage)
 	mux.HandleFunc("/api/devin", h.APIDevin)
 	mux.HandleFunc("/api/cursor", h.APICursor)
+	mux.HandleFunc("/api/spend", h.APISpend)
 	mux.HandleFunc("/health", h.Health)
 
 	srv := &http.Server{

@@ -220,6 +220,38 @@
   .legend li { padding-left: 0.1rem; }
   .legend .caveat { margin-top: 0.8rem; font-style: italic; }
 
+  .spend-section .agent-card { max-width: none; }
+  .spend-section h4 {
+    margin: 1.1rem 0 0.35rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+  }
+  .spend-scroll { overflow-x: auto; }
+  .spend-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.92rem;
+    margin-top: 0.35rem;
+  }
+  .spend-table th {
+    text-align: left;
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.4rem 0.55rem;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .spend-table td {
+    padding: 0.45rem 0.55rem;
+    border-bottom: 1px solid var(--border);
+    font-variant-numeric: tabular-nums;
+  }
+  .spend-table th.num, .spend-table td.num { text-align: right; white-space: nowrap; }
+  .spend-section .hero-note { margin-top: 0.45rem; }
+
   @media (max-width: 640px) {
     body { padding: 1rem; }
     .agents { grid-template-columns: 1fr; }
@@ -532,6 +564,108 @@
       ne conserve aucun historique. Une grosse semaine passée continue de peser sur la projection.
     </div>
   </div>
+
+  {{/* Consommation Bifrost (fenêtres) et personnes Telegram de Léo (cumul Hermes). */}}
+  {{if .Spend}}
+    {{$s := .Spend}}
+    <div class="devin-section spend-section">
+      <div class="agent-card{{if $s.Error}} error{{end}}">
+        <div class="agent-header">
+          <h3>Consommation <span class="badge-plain">Bifrost</span></h3>
+          {{if $s.Error}}
+            <span class="badge red"><span class="dot-sm red"></span>injoignable</span>
+          {{else}}
+            <span class="badge green"><span class="dot-sm green"></span>ok</span>
+          {{end}}
+        </div>
+
+        {{if $s.Error}}
+          <div class="error-msg">{{$s.Error}}</div>
+        {{else}}
+          <h4>Par clé virtuelle</h4>
+          {{if $s.Keys}}
+            <div class="spend-scroll">
+              <table class="spend-table">
+                <thead>
+                  <tr>
+                    <th>Qui</th>
+                    <th>Fournisseur</th>
+                    <th class="num">Coût 24 h</th>
+                    <th class="num">Coût 7 j</th>
+                    <th class="num">Tokens in 7 j</th>
+                    <th class="num">Tokens out 7 j</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {{range $s.Keys}}
+                    <tr>
+                      <td>{{vkLabel .VirtualKey}}</td>
+                      <td>{{provLabel .Provider}}</td>
+                      <td class="num">{{fmtUSDf .Cost24h}}</td>
+                      <td class="num">{{fmtUSDf .Cost7d}}</td>
+                      <td class="num">{{fmtTokens .TokensIn7d}}</td>
+                      <td class="num">{{fmtTokens .TokensOut7d}}</td>
+                    </tr>
+                  {{end}}
+                </tbody>
+              </table>
+            </div>
+          {{else}}
+            <div class="hero-note">Aucune série Bifrost.</div>
+          {{end}}
+          <div class="hero-note">
+            OpenCode Go : prix catalogue imputé au forfait, pas une facture. Bedrock : USD.
+            Les deux ne s'additionnent pas.
+          </div>
+
+          <h4>Léo — personnes Telegram</h4>
+          {{if or $s.Leo $s.LeoOther}}
+            <div class="spend-scroll">
+              <table class="spend-table">
+                <thead>
+                  <tr>
+                    <th>Personne</th>
+                    <th class="num">Coût</th>
+                    <th class="num">Tokens in</th>
+                    <th class="num">Tokens out</th>
+                    <th class="num">Sessions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {{range $s.Leo}}
+                    <tr>
+                      <td>{{.User}}</td>
+                      <td class="num">{{fmtUSDf .CostUSD}}</td>
+                      <td class="num">{{fmtTokens .TokensIn}}</td>
+                      <td class="num">{{fmtTokens .TokensOut}}</td>
+                      <td class="num">{{fmtCount .Sessions}}</td>
+                    </tr>
+                  {{end}}
+                  {{with $s.LeoOther}}
+                    <tr>
+                      <td>hors Telegram</td>
+                      <td class="num">{{fmtUSDf .CostUSD}}</td>
+                      <td class="num">{{fmtTokens .TokensIn}}</td>
+                      <td class="num">{{fmtTokens .TokensOut}}</td>
+                      <td class="num">{{fmtCount .Sessions}}</td>
+                    </tr>
+                  {{end}}
+                </tbody>
+              </table>
+            </div>
+          {{else}}
+            <div class="hero-note">Aucune session Hermes.</div>
+          {{end}}
+          <div class="hero-note">
+            Cumul enregistré par Hermes (state.db), estimation Hermes.
+            Ce n'est pas le coût Bifrost de la clé Léo.
+          </div>
+        {{end}}
+
+        <div class="fetch-time">relevé {{fmtTime $s.FetchedAt}}</div>
+      </div>
+    </div>
+  {{end}}
 
 </div>
 </body>

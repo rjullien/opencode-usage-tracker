@@ -21,6 +21,7 @@ import (
 	"github.com/rjullien/opencode-usage-tracker/internal/cursor"
 	"github.com/rjullien/opencode-usage-tracker/internal/devin"
 	"github.com/rjullien/opencode-usage-tracker/internal/opencode"
+	"github.com/rjullien/opencode-usage-tracker/internal/spend"
 )
 
 // templatesFS keeps the templates in the package that renders them, so tests can
@@ -68,6 +69,13 @@ type CursorSource interface {
 	Statuses() *cursor.Status
 }
 
+// SpendSource supplies Bifrost and Hermes Leo consumption from Prometheus.
+// OPTIONAL: a nil source omits the section. A failed scrape is carried on the
+// report and must not disturb the quota cards.
+type SpendSource interface {
+	Report() *spend.Report
+}
+
 // Handler serves the dashboard and API.
 type Handler struct {
 	tmpl    *template.Template
@@ -75,6 +83,7 @@ type Handler struct {
 	weights WeightsSource
 	devin   DevinSource
 	cursor  CursorSource
+	spend   SpendSource
 
 	// now is injectable so the rendered budget can be asserted deterministically.
 	now func() time.Time
@@ -99,6 +108,10 @@ func New(poller Poller, weights WeightsSource, dest DevinSource, cur CursorSourc
 		"fmtACU":     fmtACU,
 		"fmtUSD":     fmtUSD,
 		"fmtUSDf":    fmtUSDf,
+		"fmtTokens":  fmtTokens,
+		"fmtCount":   fmtCount,
+		"vkLabel":    vkLabel,
+		"provLabel":  providerLabel,
 		"lastDays":   lastDays,
 		"productACU": productACU,
 		"levelOf":    func(pct int) opencode.Level { return opencode.AbsoluteLevel(pct) },
@@ -109,6 +122,11 @@ func New(poller Poller, weights WeightsSource, dest DevinSource, cur CursorSourc
 	)
 
 	return &Handler{tmpl: tmpl, poller: poller, weights: weights, devin: dest, cursor: cur, now: time.Now}
+}
+
+// UseSpend wires the optional Prometheus consumption section. Nil omits it.
+func (h *Handler) UseSpend(s SpendSource) {
+	h.spend = s
 }
 
 // WindowView is a quota window plus its budget position. JSON field names match
@@ -166,6 +184,7 @@ type DashboardData struct {
 	Pool     PoolView
 	Devin    *DevinView
 	Cursor   *CursorView
+	Spend    *spend.Report
 	Now      time.Time
 	KeyCount int
 }
@@ -257,7 +276,6 @@ func nextResetDay(now time.Time) time.Time {
 	_, end := devin.CycleBounds(now, devin.ResetDayFromEnv())
 	return end
 }
-
 
 // CursorView is the Cursor + Grok Bot section, outside the OpenCode pool. nil
 // when no CURSOR_API_KEY / CURSOR_REFRESH_TOKEN is configured.
@@ -405,7 +423,7 @@ func clampPct(v float64) float64 {
 	return v
 }
 
-func buildDashboardData(statuses []opencode.AgentStatus, weights map[string]float64, devSrc DevinSource, curSrc CursorSource, now time.Time) DashboardData {
+func buildDashboardData(statuses []opencode.AgentStatus, weights map[string]float64, devSrc DevinSource, curSrc CursorSource, spend *spend.Report, now time.Time) DashboardData {
 	agents := make([]AgentView, 0, len(statuses))
 
 	for _, s := range statuses {
@@ -457,6 +475,7 @@ func buildDashboardData(statuses []opencode.AgentStatus, weights map[string]floa
 		Pool:     buildPool(agents),
 		Devin:    buildDevinView(statusesDev(devSrc), now),
 		Cursor:   buildCursorView(statusesCursor(curSrc), now),
+		Spend:    spend,
 		Now:      now,
 		KeyCount: len(agents),
 	}
@@ -557,7 +576,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.devin, h.cursor, h.now())
+	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.devin, h.cursor, h.spendNow(), h.now())
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.tmpl.ExecuteTemplate(w, "dashboard.html", data); err != nil {
@@ -567,7 +586,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 
 // APIUsage returns JSON usage data, enriched with the budget position.
 func (h *Handler) APIUsage(w http.ResponseWriter, r *http.Request) {
-	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.devin, h.cursor, h.now())
+	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.devin, h.cursor, nil, h.now())
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -609,6 +628,31 @@ func (h *Handler) APICursor(w http.ResponseWriter, r *http.Request) {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	enc.Encode(s)
+}
+
+// APISpend returns the Prometheus consumption snapshot.
+// 404 when PROMETHEUS_URL is unset, 200 with JSON otherwise (including a scrape error).
+func (h *Handler) APISpend(w http.ResponseWriter, r *http.Request) {
+	if h.spend == nil {
+		http.NotFound(w, r)
+		return
+	}
+	rep := h.spend.Report()
+	if rep == nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	enc.Encode(rep)
+}
+
+func (h *Handler) spendNow() *spend.Report {
+	if h.spend == nil {
+		return nil
+	}
+	return h.spend.Report()
 }
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {
@@ -768,6 +812,75 @@ func fmtUSD(cents int64) string {
 // fmtUSDf renders a dollar amount already in dollars (solde Devin) via fmtUSD.
 func fmtUSDf(v float64) string {
 	return fmtUSD(int64(v*100 + 0.5))
+}
+
+// fmtTokens renders a token count compactly: "11,3 M", "152 k", "23".
+func fmtTokens(v float64) string {
+	sign := ""
+	if v < 0 {
+		sign = "-"
+		v = -v
+	}
+	switch {
+	case v >= 1e9:
+		return sign + trimScale(v/1e9) + " Md"
+	case v >= 1e6:
+		return sign + trimScale(v/1e6) + " M"
+	case v >= 1e3:
+		return sign + trimScale(v/1e3) + " k"
+	default:
+		return sign + decimal(v, 0)
+	}
+}
+
+func trimScale(v float64) string {
+	s := decimal(v, 1)
+	return strings.TrimSuffix(s, ",0")
+}
+
+// fmtCount renders a session count as an integer.
+func fmtCount(v float64) string {
+	return strconv.FormatInt(int64(math.Round(v)), 10)
+}
+
+// vkLabel is the short name of a Bifrost virtual key. Unknown ids stay as-is,
+// so a key added in Bifrost shows up without a code change.
+func vkLabel(id string) string {
+	switch id {
+	case "hermes-lea":
+		return "Léa"
+	case "hermes-leo":
+		return "Léo"
+	case "hermes-lya":
+		return "Lya"
+	case "vulcain":
+		return "Vulcain"
+	case "tailscale-baptiste":
+		return "Baptiste"
+	case "tailscale-emma":
+		return "Emma"
+	default:
+		return id
+	}
+}
+
+// providerLabel names the provider on a consumption row. OpenCode Go dollars
+// are a catalogue price against the flat allowance; Bedrock dollars are real.
+func providerLabel(p string) string {
+	switch p {
+	case "opencode-go", "opencode-go-anthropic":
+		return "OpenCode Go"
+	case "bedrock":
+		return "Bedrock"
+	case "gemini":
+		return "Gemini"
+	case "groq":
+		return "Groq"
+	case "":
+		return "inconnu"
+	default:
+		return p
+	}
 }
 
 // lastDays renvoie les jours de consommation ACU triés du plus récent au plus
