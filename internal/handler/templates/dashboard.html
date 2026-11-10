@@ -593,6 +593,7 @@
                     <th class="num">Coût 24 h</th>
                     <th class="num">Coût 7 j</th>
                     <th class="num">Tokens in 7 j</th>
+                    <th class="num">Cache 7 j</th>
                     <th class="num">Tokens out 7 j</th>
                   </tr>
                 </thead>
@@ -604,6 +605,7 @@
                       <td class="num">{{fmtUSDf .Cost24h}}</td>
                       <td class="num">{{fmtUSDf .Cost7d}}</td>
                       <td class="num">{{fmtTokens .TokensIn7d}}</td>
+                      <td class="num">{{bifrostCache .}}</td>
                       <td class="num">{{fmtTokens .TokensOut7d}}</td>
                     </tr>
                   {{end}}
@@ -616,6 +618,7 @@
           <div class="hero-note">
             OpenCode Go : prix catalogue imputé au forfait, pas une facture. Bedrock : USD.
             Les deux ne s'additionnent pas.
+            Le % cache est la part du prompt déjà en cache : cache ÷ tokens in, qui l'incluent déjà.
           </div>
 
           <h4>Léo — personnes Telegram</h4>
@@ -627,6 +630,7 @@
                     <th>Personne</th>
                     <th class="num">Coût</th>
                     <th class="num">Tokens in</th>
+                    <th class="num">Cache</th>
                     <th class="num">Tokens out</th>
                     <th class="num">Sessions</th>
                   </tr>
@@ -637,6 +641,7 @@
                       <td>{{.User}}</td>
                       <td class="num">{{fmtUSDf .CostUSD}}</td>
                       <td class="num">{{fmtTokens .TokensIn}}</td>
+                      <td class="num">{{hermesCache .}}</td>
                       <td class="num">{{fmtTokens .TokensOut}}</td>
                       <td class="num">{{fmtCount .Sessions}}</td>
                     </tr>
@@ -646,6 +651,7 @@
                       <td>hors Telegram</td>
                       <td class="num">{{fmtUSDf .CostUSD}}</td>
                       <td class="num">{{fmtTokens .TokensIn}}</td>
+                      <td class="num">{{hermesCache .}}</td>
                       <td class="num">{{fmtTokens .TokensOut}}</td>
                       <td class="num">{{fmtCount .Sessions}}</td>
                     </tr>
@@ -659,6 +665,7 @@
           <div class="hero-note">
             Cumul enregistré par Hermes (state.db), estimation Hermes.
             Ce n'est pas le coût Bifrost de la clé Léo.
+            Le % cache est cache ÷ (tokens in + cache) : ici les tokens in n'incluent pas le cache.
           </div>
         {{end}}
 

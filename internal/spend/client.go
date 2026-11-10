@@ -30,6 +30,7 @@ const (
 	qCost7  = `sum by (virtual_key_name, provider) (` + dedupe + `(increase(bifrost_cost_total[7d])))`
 	qIn7    = `sum by (virtual_key_name, provider) (` + dedupe + `(increase(bifrost_input_tokens_total[7d])))`
 	qOut7   = `sum by (virtual_key_name, provider) (` + dedupe + `(increase(bifrost_output_tokens_total[7d])))`
+	qCache7 = `sum by (virtual_key_name, provider) (` + dedupe + `(increase(bifrost_cache_read_input_tokens_total[7d])))`
 
 	qHermesCost     = dedupe + `(hermes_cost_usd_total{agent="leo"})`
 	qHermesTokens   = dedupe + `(hermes_tokens_total{agent="leo"})`
@@ -44,6 +45,9 @@ type KeySpend struct {
 	Cost7d      float64 `json:"cost7d"`
 	TokensIn7d  float64 `json:"tokensIn7d"`
 	TokensOut7d float64 `json:"tokensOut7d"`
+	// CacheRead7d is a subset of TokensIn7d: Bifrost counts provider prompt
+	// tokens in input, and the cached ones again here.
+	CacheRead7d float64 `json:"cacheRead7d"`
 }
 
 // LeoUser is one person (or the rolled-up non-Telegram remainder) inside Hermes Leo.
@@ -53,7 +57,11 @@ type LeoUser struct {
 	CostUSD   float64 `json:"costUsd"`
 	TokensIn  float64 `json:"tokensIn"`
 	TokensOut float64 `json:"tokensOut"`
-	Sessions  float64 `json:"sessions"`
+	// CacheRead and CacheWrite are disjoint from TokensIn. Hermes stores the
+	// uncached prompt tail in input and the cached prefix beside it.
+	CacheRead  float64 `json:"cacheRead"`
+	CacheWrite float64 `json:"cacheWrite"`
+	Sessions   float64 `json:"sessions"`
 }
 
 // Report is the consumption snapshot. Error set means nothing else is usable:
@@ -85,7 +93,7 @@ func NewClient(baseURL string, timeout time.Duration) *Client {
 // Report.Error; Fetch itself does not fail, so the dashboard can still render.
 func (c *Client) Fetch() *Report {
 	now := time.Now()
-	queries := []string{qCost24, qCost7, qIn7, qOut7, qHermesCost, qHermesTokens, qHermesSessions}
+	queries := []string{qCost24, qCost7, qIn7, qOut7, qCache7, qHermesCost, qHermesTokens, qHermesSessions}
 	samples := make([][]sample, len(queries))
 	errs := make([]error, len(queries))
 
@@ -104,7 +112,7 @@ func (c *Client) Fetch() *Report {
 			return &Report{FetchedAt: now, Error: err.Error()}
 		}
 	}
-	return assemble(now, samples[0], samples[1], samples[2], samples[3], samples[4], samples[5], samples[6])
+	return assemble(now, samples[0], samples[1], samples[2], samples[3], samples[4], samples[5], samples[6], samples[7])
 }
 
 type sample struct {
@@ -199,7 +207,7 @@ func (s promSample) value() (float64, bool) {
 	return v, true
 }
 
-func assemble(now time.Time, cost24, cost7, in7, out7, hCost, hTokens, hSessions []sample) *Report {
+func assemble(now time.Time, cost24, cost7, in7, out7, cache7, hCost, hTokens, hSessions []sample) *Report {
 	type acc struct {
 		key KeySpend
 	}
@@ -236,6 +244,11 @@ func assemble(now time.Time, cost24, cost7, in7, out7, hCost, hTokens, hSessions
 	for _, s := range out7 {
 		if a := touch(s.labels["virtual_key_name"], s.labels["provider"]); a != nil {
 			a.key.TokensOut7d += s.value
+		}
+	}
+	for _, s := range cache7 {
+		if a := touch(s.labels["virtual_key_name"], s.labels["provider"]); a != nil {
+			a.key.CacheRead7d += s.value
 		}
 	}
 
@@ -281,6 +294,10 @@ func assemble(now time.Time, cost24, cost7, in7, out7, hCost, hTokens, hSessions
 			p.TokensIn += s.value
 		case "output":
 			p.TokensOut += s.value
+		case "cache_read":
+			p.CacheRead += s.value
+		case "cache_write":
+			p.CacheWrite += s.value
 		}
 	}
 	for _, s := range hSessions {
@@ -290,7 +307,7 @@ func assemble(now time.Time, cost24, cost7, in7, out7, hCost, hTokens, hSessions
 	var leo []LeoUser
 	var other *LeoUser
 	for _, p := range people {
-		if p.CostUSD == 0 && p.TokensIn == 0 && p.TokensOut == 0 && p.Sessions == 0 {
+		if p.CostUSD == 0 && p.TokensIn == 0 && p.TokensOut == 0 && p.CacheRead == 0 && p.CacheWrite == 0 && p.Sessions == 0 {
 			continue
 		}
 		if p.Source == "telegram" {
@@ -303,6 +320,8 @@ func assemble(now time.Time, cost24, cost7, in7, out7, hCost, hTokens, hSessions
 		other.CostUSD += p.CostUSD
 		other.TokensIn += p.TokensIn
 		other.TokensOut += p.TokensOut
+		other.CacheRead += p.CacheRead
+		other.CacheWrite += p.CacheWrite
 		other.Sessions += p.Sessions
 	}
 	sort.Slice(leo, func(i, j int) bool {

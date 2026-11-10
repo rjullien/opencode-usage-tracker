@@ -333,14 +333,18 @@ Deux tableaux, deux horloges, qu'on n'additionne pas :
 
 - **Par clé virtuelle.** `increase()` sur `bifrost_cost_total`,
   `bifrost_input_tokens_total` et `bifrost_output_tokens_total`, groupé par
-  `virtual_key_name` et `provider`. Colonnes : coût 24 h, coût 7 j, tokens 7 j.
+  `virtual_key_name` et `provider`, plus `bifrost_cache_read_input_tokens_total`.
+  Colonnes : coût 24 h, coût 7 j, tokens in / cache / out sur 7 j. Le % cache
+  est cache ÷ tokens in : chez Bifrost les tokens in incluent déjà le cache.
   Les compteurs Bifrost repartent à zéro au redémarrage du gateway, d'où la
   fenêtre plutôt que la valeur brute. Le $ OpenCode Go est le prix catalogue
   imputé au forfait, pas une facture. Le $ Bedrock est réel. Une clé inconnue
   s'affiche sous son id.
 - **Léo, par personne Telegram.** Valeur courante de `hermes_cost_usd_total`,
   `hermes_tokens_total` et `hermes_sessions_total` (`agent="leo"`). L'exporter
-  republie le cumul de `state.db`. Cron, API et TUI tiennent sur une ligne
+  republie le cumul de `state.db` (`input`, `cache_read`, `cache_write`, `output`).
+  Le % cache est cache ÷ (tokens in + cache) : ici les tokens in n'incluent
+  pas le cache. Cron, API et TUI tiennent sur une ligne
   « hors Telegram ». Ce cumul n'est pas le coût Bifrost de la clé `hermes-leo`.
 
 Les noms Telegram viennent de Prometheus au moment du rendu. Ils ne sont pas

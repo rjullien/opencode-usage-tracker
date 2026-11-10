@@ -35,6 +35,10 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 			fmt.Fprint(w, vector(
 				series(23000, "virtual_key_name", "hermes-lea", "provider", "bedrock"),
 			))
+		case strings.Contains(q, "bifrost_cache_read_input_tokens_total"):
+			fmt.Fprint(w, vector(
+				series(10800000, "virtual_key_name", "hermes-lea", "provider", "bedrock"),
+			))
 		case strings.Contains(q, "hermes_cost_usd_total"):
 			fmt.Fprint(w, vector(
 				series(135, "source", "telegram", "user", "Camille Jullien"),
@@ -45,9 +49,10 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 		case strings.Contains(q, "hermes_tokens_total"):
 			fmt.Fprint(w, vector(
 				series(1000, "source", "telegram", "user", "Camille Jullien", "type", "input"),
-				series(9e9, "source", "telegram", "user", "Camille Jullien", "type", "cache_read"),
+				series(9000, "source", "telegram", "user", "Camille Jullien", "type", "cache_read"),
 				series(50, "source", "telegram", "user", "Camille Jullien", "type", "output"),
 				series(10, "source", "cron", "user", "aucun", "type", "input"),
+				series(40, "source", "cron", "user", "aucun", "type", "cache_read"),
 			))
 		case strings.Contains(q, "hermes_sessions_total"):
 			fmt.Fprint(w, vector(
@@ -71,7 +76,7 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 	if r.Keys[0].VirtualKey != "hermes-lea" || r.Keys[0].Provider != "bedrock" || r.Keys[0].Cost24h != 50 {
 		t.Fatalf("first key = %+v", r.Keys[0])
 	}
-	if r.Keys[0].TokensIn7d != 11300000 || r.Keys[0].TokensOut7d != 23000 {
+	if r.Keys[0].TokensIn7d != 11300000 || r.Keys[0].TokensOut7d != 23000 || r.Keys[0].CacheRead7d != 10800000 {
 		t.Fatalf("lea tokens = %+v", r.Keys[0])
 	}
 	leo := key(r, "hermes-leo", "opencode-go")
@@ -82,13 +87,13 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 	if len(r.Leo) != 2 {
 		t.Fatalf("leo users = %+v", r.Leo)
 	}
-	if r.Leo[0].User != "Camille Jullien" || r.Leo[0].TokensIn != 1000 || r.Leo[0].TokensOut != 50 {
-		t.Fatalf("camille = %+v, cache read must not count as input", r.Leo[0])
+	if r.Leo[0].User != "Camille Jullien" || r.Leo[0].TokensIn != 1000 || r.Leo[0].TokensOut != 50 || r.Leo[0].CacheRead != 9000 {
+		t.Fatalf("camille = %+v, cache read must stay out of input", r.Leo[0])
 	}
 	if r.Leo[1].User != "Baptiste" {
 		t.Fatalf("second user = %+v", r.Leo[1])
 	}
-	if r.LeoOther == nil || r.LeoOther.CostUSD != 4 || r.LeoOther.TokensIn != 10 || r.LeoOther.Sessions != 173 {
+	if r.LeoOther == nil || r.LeoOther.CostUSD != 4 || r.LeoOther.TokensIn != 10 || r.LeoOther.CacheRead != 40 || r.LeoOther.Sessions != 173 {
 		t.Fatalf("other = %+v", r.LeoOther)
 	}
 }
@@ -124,8 +129,8 @@ func TestFetcherCaches(t *testing.T) {
 	if a.FetchedAt != b.FetchedAt {
 		t.Fatal("second call bypassed the cache")
 	}
-	if hits != 7 {
-		t.Fatalf("hits = %d, want 7 (one scrape of seven queries)", hits)
+	if hits != 8 {
+		t.Fatalf("hits = %d, want 8 (one scrape of eight queries)", hits)
 	}
 }
 

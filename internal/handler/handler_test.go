@@ -832,18 +832,18 @@ func TestSpendSectionRendersKeysAndLeoUsers(t *testing.T) {
 	h.UseSpend(stubSpend{r: &spend.Report{
 		FetchedAt: captureNow,
 		Keys: []spend.KeySpend{
-			{VirtualKey: "hermes-lea", Provider: "bedrock", Cost24h: 50.35, Cost7d: 50.35, TokensIn7d: 11.3e6, TokensOut7d: 23000},
+			{VirtualKey: "hermes-lea", Provider: "bedrock", Cost24h: 50.35, Cost7d: 50.35, TokensIn7d: 11.3e6, TokensOut7d: 23000, CacheRead7d: 10.8e6},
 			{VirtualKey: "tailscale-emma", Provider: "opencode-go", Cost24h: 0.25, Cost7d: 0.25, TokensIn7d: 14e6, TokensOut7d: 152000},
 		},
 		Leo: []spend.LeoUser{
-			{User: "Camille Jullien", Source: "telegram", CostUSD: 135.58, TokensIn: 1000, TokensOut: 50, Sessions: 8},
+			{User: "Camille Jullien", Source: "telegram", CostUSD: 135.58, TokensIn: 1000, TokensOut: 50, CacheRead: 9000, Sessions: 8},
 		},
 		LeoOther: &spend.LeoUser{Source: "other", CostUSD: 4, Sessions: 173},
 	}})
 	body := renderDashboard(t, h)
 	mustContain(t, body,
-		"Léa", "Bedrock", "Emma", "OpenCode Go", "50,35 $", "11,3 M",
-		"Camille Jullien", "hors Telegram", "pas une facture",
+		"Léa", "Bedrock", "Emma", "OpenCode Go", "50,35 $", "11,3 M", "10,8 M · 96%",
+		"Camille Jullien", "9 k · 90%", "hors Telegram", "pas une facture",
 		"Ce n'est pas le coût Bifrost de la clé Léo",
 		"Consommé moyen du parc",
 	)

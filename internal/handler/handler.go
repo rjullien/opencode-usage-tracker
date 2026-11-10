@@ -94,27 +94,29 @@ type Handler struct {
 // dest / cursor may also be nil: those sections are then omitted entirely.
 func New(poller Poller, weights WeightsSource, dest DevinSource, cur CursorSource) *Handler {
 	funcMap := template.FuncMap{
-		"levelLabel": levelLabel,
-		"fmtTime":    fmtTime,
-		"fmtDate":    fmtDate,
-		"fmtDay":     fmtDay,
-		"fmtDur":     fmtDuration,
-		"fmtDays":    fmtDays,
-		"fmtRate":    fmtRate,
-		"deltaPts":   deltaPts,
-		"clamp":      clamp,
-		"weightText": weightText,
-		"weightZero": weightZero,
-		"fmtACU":     fmtACU,
-		"fmtUSD":     fmtUSD,
-		"fmtUSDf":    fmtUSDf,
-		"fmtTokens":  fmtTokens,
-		"fmtCount":   fmtCount,
-		"vkLabel":    vkLabel,
-		"provLabel":  providerLabel,
-		"lastDays":   lastDays,
-		"productACU": productACU,
-		"levelOf":    func(pct int) opencode.Level { return opencode.AbsoluteLevel(pct) },
+		"levelLabel":   levelLabel,
+		"fmtTime":      fmtTime,
+		"fmtDate":      fmtDate,
+		"fmtDay":       fmtDay,
+		"fmtDur":       fmtDuration,
+		"fmtDays":      fmtDays,
+		"fmtRate":      fmtRate,
+		"deltaPts":     deltaPts,
+		"clamp":        clamp,
+		"weightText":   weightText,
+		"weightZero":   weightZero,
+		"fmtACU":       fmtACU,
+		"fmtUSD":       fmtUSD,
+		"fmtUSDf":      fmtUSDf,
+		"fmtTokens":    fmtTokens,
+		"fmtCount":     fmtCount,
+		"bifrostCache": bifrostCacheCell,
+		"hermesCache":  hermesCacheCell,
+		"vkLabel":      vkLabel,
+		"provLabel":    providerLabel,
+		"lastDays":     lastDays,
+		"productACU":   productACU,
+		"levelOf":      func(pct int) opencode.Level { return opencode.AbsoluteLevel(pct) },
 	}
 
 	tmpl := template.Must(
@@ -841,6 +843,28 @@ func trimScale(v float64) string {
 // fmtCount renders a session count as an integer.
 func fmtCount(v float64) string {
 	return strconv.FormatInt(int64(math.Round(v)), 10)
+}
+
+// bifrostCacheCell is "31,2 M · 96%". Bifrost's input counter is the provider
+// prompt total and already includes cached tokens, so the rate is cache ÷ input.
+func bifrostCacheCell(k spend.KeySpend) string {
+	return cacheCell(k.CacheRead7d, k.TokensIn7d)
+}
+
+// hermesCacheCell is the same shape. Hermes stores uncached input, cache read
+// and cache write as separate buckets, so the rate is
+// cache read ÷ (input + cache read + cache write).
+func hermesCacheCell(u spend.LeoUser) string {
+	return cacheCell(u.CacheRead, u.TokensIn+u.CacheRead+u.CacheWrite)
+}
+
+func cacheCell(read, total float64) string {
+	tokens := fmtTokens(read)
+	if total <= 0 {
+		return tokens
+	}
+	pct := int(math.Round(read / total * 100))
+	return tokens + " · " + strconv.Itoa(pct) + "%"
 }
 
 // vkLabel is the short name of a Bifrost virtual key. Unknown ids stay as-is,
