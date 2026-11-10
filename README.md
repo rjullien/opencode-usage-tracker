@@ -335,10 +335,11 @@ Deux tableaux, deux horloges, qu'on n'additionne pas :
   `bifrost_input_tokens_total` et `bifrost_output_tokens_total`, groupé par
   `virtual_key_name` et `provider`, plus `bifrost_cache_read_input_tokens_total`.
   Une ligne par personne. Un clic ouvre les fournisseurs, un second les modèles.
-  Colonnes : coût 24 h, coût 7 j, tokens in / cache / out sur 7 j. Le % cache
-  est cache ÷ tokens in : chez Bifrost les tokens in incluent déjà le cache.
-  Les compteurs Bifrost repartent à zéro au redémarrage du gateway, d'où la
-  fenêtre plutôt que la valeur brute. Le $ OpenCode Go est le prix catalogue
+  Colonnes : coût, tokens in, cache et tokens out depuis le 1er du mois
+  (heure de Paris). Le % cache est cache ÷ tokens in : chez Bifrost les
+  tokens in incluent déjà le cache. Les compteurs Bifrost repartent à zéro
+  au redémarrage du gateway, donc un redémarrage en cours de mois coupe le
+  cumul. Le $ OpenCode Go est le prix catalogue
   imputé au forfait, pas une facture. Le $ Bedrock est réel. Une clé inconnue
   s'affiche sous son id.
 - **Léo, par personne Telegram.** Valeur courante de `hermes_cost_usd_total`,

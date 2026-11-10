@@ -14,16 +14,10 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 		q := r.URL.Query().Get("query")
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case strings.Contains(q, "bifrost_cost_total[24h]"):
+		case strings.Contains(q, "bifrost_cost_total"):
 			fmt.Fprint(w, vector(
 				series(50, "virtual_key_name", "hermes-lea", "provider", "bedrock", "model", "claude-opus-5-5"),
 				series(1, "virtual_key_name", "hermes-leo", "provider", "opencode-go", "model", "deepseek-v4.1-flash"),
-				series(2, "virtual_key_name", "tailscale-emma", "provider", "opencode-go", "model", "deepseek-v4.1-flash"),
-			))
-		case strings.Contains(q, "bifrost_cost_total[7d]"):
-			fmt.Fprint(w, vector(
-				series(50, "virtual_key_name", "hermes-lea", "provider", "bedrock", "model", "claude-opus-5-5"),
-				series(3, "virtual_key_name", "hermes-leo", "provider", "opencode-go", "model", "deepseek-v4.1-flash"),
 				series(2, "virtual_key_name", "tailscale-emma", "provider", "opencode-go", "model", "deepseek-v4.1-flash"),
 			))
 		case strings.Contains(q, "bifrost_input_tokens_total"):
@@ -75,20 +69,23 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 		t.Fatalf("people = %d, want 3 (%+v)", len(r.People), r.People)
 	}
 	lea := r.People[0]
-	if lea.VirtualKey != "hermes-lea" || lea.Cost24h != 50 {
+	if lea.VirtualKey != "hermes-lea" || lea.Cost != 50 {
 		t.Fatalf("first person = %+v", lea)
 	}
-	if lea.TokensIn7d != 11300000 || lea.TokensOut7d != 23000 || lea.CacheRead7d != 10800000 {
+	if lea.TokensIn != 11300000 || lea.TokensOut != 23000 || lea.CacheRead != 10800000 {
 		t.Fatalf("lea tokens = %+v", lea.Totals)
+	}
+	if r.From.Day() != 1 || r.From.Month() != time.Now().Month() {
+		t.Fatalf("from = %s, want the 1st of this month", r.From)
 	}
 	if len(lea.Providers) != 1 || lea.Providers[0].Provider != "bedrock" || len(lea.Providers[0].Models) != 1 || lea.Providers[0].Models[0].Model != "claude-opus-5-5" {
 		t.Fatalf("lea tree = %+v", lea.Providers)
 	}
-	if lea.Providers[0].CacheRead7d != lea.CacheRead7d || lea.Providers[0].Models[0].CacheRead7d != lea.CacheRead7d {
+	if lea.Providers[0].CacheRead != lea.CacheRead || lea.Providers[0].Models[0].CacheRead != lea.CacheRead {
 		t.Fatalf("cache did not roll up: %+v", lea.Providers)
 	}
 	leo := person(r, "hermes-leo")
-	if leo.Cost7d != 3 || leo.TokensIn7d != 2000000 || len(leo.Providers) != 1 || len(leo.Providers[0].Models) != 2 {
+	if leo.Cost != 1 || leo.TokensIn != 2000000 || len(leo.Providers) != 1 || len(leo.Providers[0].Models) != 2 {
 		t.Fatalf("leo = %+v models %+v", leo.Totals, leo.Providers)
 	}
 	if leo.Providers[0].Models[0].Model != "deepseek-v4.1-flash" || leo.Providers[0].Models[1].Model != "mimo-v2.6-pro" {
@@ -140,8 +137,8 @@ func TestFetcherCaches(t *testing.T) {
 	if a.FetchedAt != b.FetchedAt {
 		t.Fatal("second call bypassed the cache")
 	}
-	if hits != 8 {
-		t.Fatalf("hits = %d, want 8 (one scrape of eight queries)", hits)
+	if hits != 7 {
+		t.Fatalf("hits = %d, want 7 (one scrape of seven queries)", hits)
 	}
 }
 

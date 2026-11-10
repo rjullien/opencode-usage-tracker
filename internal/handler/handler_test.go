@@ -831,23 +831,24 @@ func TestSpendSectionRendersKeysAndLeoUsers(t *testing.T) {
 	h := newTestHandler(t)
 	h.UseSpend(stubSpend{r: &spend.Report{
 		FetchedAt: captureNow,
+		From:      time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
 		People: []spend.PersonSpend{{
 			VirtualKey: "hermes-lea",
-			Totals:     spend.Totals{Cost24h: 50.35, Cost7d: 50.35, TokensIn7d: 11.3e6, TokensOut7d: 23000, CacheRead7d: 10.8e6},
+			Totals:     spend.Totals{Cost: 50.35, TokensIn: 11.3e6, TokensOut: 23000, CacheRead: 10.8e6},
 			Providers: []spend.ProviderSpend{{
 				Provider: "bedrock",
-				Totals:   spend.Totals{Cost24h: 50.35, Cost7d: 50.35, TokensIn7d: 11.3e6, TokensOut7d: 23000, CacheRead7d: 10.8e6},
+				Totals:   spend.Totals{Cost: 50.35, TokensIn: 11.3e6, TokensOut: 23000, CacheRead: 10.8e6},
 				Models: []spend.ModelSpend{{
 					Model:  "claude-opus-5-5",
-					Totals: spend.Totals{Cost24h: 50.35, Cost7d: 50.35, TokensIn7d: 11.3e6, TokensOut7d: 23000, CacheRead7d: 10.8e6},
+					Totals: spend.Totals{Cost: 50.35, TokensIn: 11.3e6, TokensOut: 23000, CacheRead: 10.8e6},
 				}},
 			}},
 		}, {
 			VirtualKey: "tailscale-emma",
-			Totals:     spend.Totals{Cost24h: 0.25, Cost7d: 0.25, TokensIn7d: 14e6, TokensOut7d: 152000},
+			Totals:     spend.Totals{Cost: 0.25, TokensIn: 14e6, TokensOut: 152000},
 			Providers: []spend.ProviderSpend{{
 				Provider: "opencode-go",
-				Totals:   spend.Totals{Cost24h: 0.25, Cost7d: 0.25, TokensIn7d: 14e6, TokensOut7d: 152000},
+				Totals:   spend.Totals{Cost: 0.25, TokensIn: 14e6, TokensOut: 152000},
 			}},
 		}},
 		Leo: []spend.LeoUser{
@@ -858,6 +859,7 @@ func TestSpendSectionRendersKeysAndLeoUsers(t *testing.T) {
 	body := renderDashboard(t, h)
 	mustContain(t, body,
 		"Léa", "Bedrock", "claude-opus-5-5", "Emma", "OpenCode Go", "50,35 $", "11,3 M", "10,8 M · 96%",
+		"Depuis le 01/11",
 		"Camille Jullien", "9 k · 90%", "hors Telegram", "pas une facture",
 		"Ce n'est pas le coût Bifrost de la clé Léo",
 		"Consommé moyen du parc",
@@ -884,7 +886,7 @@ func TestSpendErrorDoesNotHideQuotas(t *testing.T) {
 func TestAPISpend(t *testing.T) {
 	h := New(emptyPoller{}, nil, nil, nil)
 	h.UseSpend(stubSpend{r: &spend.Report{
-		People: []spend.PersonSpend{{VirtualKey: "vulcain", Totals: spend.Totals{Cost24h: 1}}},
+		People: []spend.PersonSpend{{VirtualKey: "vulcain", Totals: spend.Totals{Cost: 1}}},
 	}})
 	rec := httptest.NewRecorder()
 	h.APISpend(rec, httptest.NewRequest(http.MethodGet, "/api/spend", nil))

@@ -251,10 +251,10 @@
   }
   .spend-table th.num, .spend-table td.num { text-align: right; white-space: nowrap; }
   .spend-section .hero-note { margin-top: 0.45rem; }
-  .spend-tree { min-width: 760px; }
+  .spend-tree { min-width: 640px; }
   .spend-line {
     display: grid;
-    grid-template-columns: minmax(9rem, 1.6fr) repeat(5, minmax(5.2rem, 1fr));
+    grid-template-columns: minmax(9rem, 1.6fr) repeat(4, minmax(5.2rem, 1fr));
     gap: 0.35rem 0.7rem;
     align-items: center;
     padding: 0.42rem 0.15rem;
@@ -635,11 +635,10 @@
               <div class="spend-tree">
                 <div class="spend-line hd">
                   <span>Qui</span>
-                  <span class="num">Coût 24 h</span>
-                  <span class="num">Coût 7 j</span>
-                  <span class="num">Tokens in 7 j</span>
-                  <span class="num">Cache 7 j</span>
-                  <span class="num">Tokens out 7 j</span>
+                  <span class="num">Coût</span>
+                  <span class="num">Tokens in</span>
+                  <span class="num">Cache</span>
+                  <span class="num">Tokens out</span>
                 </div>
                 {{range $s.People}}
                   <details class="spend-person">
@@ -673,6 +672,8 @@
             <div class="hero-note">Aucune série Bifrost.</div>
           {{end}}
           <div class="hero-note">
+            Depuis le {{fmtDay $s.From}}, mois en cours. Coût, tokens et cache sont sur cette fenêtre.
+            Un redémarrage de Bifrost remet ses compteurs à zéro.
             OpenCode Go : prix catalogue imputé au forfait, pas une facture. Bedrock : USD.
             Les deux ne s'additionnent pas.
             Le % cache est la part du prompt déjà en cache : cache ÷ tokens in, qui l'incluent déjà.
@@ -736,11 +737,10 @@
 </html>
 
 {{define "spendNums"}}
-  <span class="num">{{fmtUSDf .Cost24h}}</span>
-  <span class="num">{{fmtUSDf .Cost7d}}</span>
-  <span class="num">{{fmtTokens .TokensIn7d}}</span>
-  <span class="num">{{bifrostCache .CacheRead7d .TokensIn7d}}</span>
-  <span class="num">{{fmtTokens .TokensOut7d}}</span>
+  <span class="num">{{fmtUSDf .Cost}}</span>
+  <span class="num">{{fmtTokens .TokensIn}}</span>
+  <span class="num">{{bifrostCache .CacheRead .TokensIn}}</span>
+  <span class="num">{{fmtTokens .TokensOut}}</span>
 {{end}}
 
 {{/* ---------------- Bloc fenêtre réutilisable ---------------- */}}

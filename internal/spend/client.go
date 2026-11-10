@@ -18,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	_ "time/tzdata"
 )
 
 const (
@@ -26,31 +28,25 @@ const (
 	// outer sum adds them up per caller.
 	dedupe = `max without (prometheus_replica, instance, pod, endpoint, service, namespace, container, job)`
 
-	byCaller = `sum by (virtual_key_name, provider, model) (` + dedupe + `(`
-
-	qCost24 = byCaller + `increase(bifrost_cost_total[24h])))`
-	qCost7  = byCaller + `increase(bifrost_cost_total[7d])))`
-	qIn7    = byCaller + `increase(bifrost_input_tokens_total[7d])))`
-	qOut7   = byCaller + `increase(bifrost_output_tokens_total[7d])))`
-	qCache7 = byCaller + `increase(bifrost_cache_read_input_tokens_total[7d])))`
+	byCaller = `sum by (virtual_key_name, provider, model) (` + dedupe + `(increase(`
 
 	qHermesCost     = dedupe + `(hermes_cost_usd_total{agent="leo"})`
 	qHermesTokens   = dedupe + `(hermes_tokens_total{agent="leo"})`
 	qHermesSessions = dedupe + `(hermes_sessions_total{agent="leo"})`
 )
 
-// Totals is one consumption bucket. CacheRead7d is a subset of TokensIn7d:
-// Bifrost counts provider prompt tokens in input, and the cached ones again here.
+// Totals is one consumption bucket over the current calendar month (Paris).
+// CacheRead is a subset of TokensIn: Bifrost counts provider prompt tokens in
+// input, and the cached ones again here.
 type Totals struct {
-	Cost24h     float64 `json:"cost24h"`
-	Cost7d      float64 `json:"cost7d"`
-	TokensIn7d  float64 `json:"tokensIn7d"`
-	TokensOut7d float64 `json:"tokensOut7d"`
-	CacheRead7d float64 `json:"cacheRead7d"`
+	Cost      float64 `json:"cost"`
+	TokensIn  float64 `json:"tokensIn"`
+	TokensOut float64 `json:"tokensOut"`
+	CacheRead float64 `json:"cacheRead"`
 }
 
 func (t Totals) zero() bool {
-	return t.Cost24h == 0 && t.Cost7d == 0 && t.TokensIn7d == 0 && t.TokensOut7d == 0 && t.CacheRead7d == 0
+	return t.Cost == 0 && t.TokensIn == 0 && t.TokensOut == 0 && t.CacheRead == 0
 }
 
 // PersonSpend is one virtual key. Providers and models stay folded until the
@@ -92,6 +88,7 @@ type LeoUser struct {
 // a partial table would mix a failed window with a live one.
 type Report struct {
 	FetchedAt time.Time     `json:"fetchedAt"`
+	From      time.Time     `json:"from"`
 	Error     string        `json:"error,omitempty"`
 	People    []PersonSpend `json:"people"`
 	Leo       []LeoUser     `json:"leo"`
@@ -117,7 +114,14 @@ func NewClient(baseURL string, timeout time.Duration) *Client {
 // Report.Error; Fetch itself does not fail, so the dashboard can still render.
 func (c *Client) Fetch() *Report {
 	now := time.Now()
-	queries := []string{qCost24, qCost7, qIn7, qOut7, qCache7, qHermesCost, qHermesTokens, qHermesSessions}
+	from, rng := monthToDate(now)
+	queries := []string{
+		byCaller + `bifrost_cost_total[` + rng + `])))`,
+		byCaller + `bifrost_input_tokens_total[` + rng + `])))`,
+		byCaller + `bifrost_output_tokens_total[` + rng + `])))`,
+		byCaller + `bifrost_cache_read_input_tokens_total[` + rng + `])))`,
+		qHermesCost, qHermesTokens, qHermesSessions,
+	}
 	samples := make([][]sample, len(queries))
 	errs := make([]error, len(queries))
 
@@ -133,10 +137,29 @@ func (c *Client) Fetch() *Report {
 
 	for _, err := range errs {
 		if err != nil {
-			return &Report{FetchedAt: now, Error: err.Error()}
+			return &Report{FetchedAt: now, From: from, Error: err.Error()}
 		}
 	}
-	return assemble(now, samples[0], samples[1], samples[2], samples[3], samples[4], samples[5], samples[6], samples[7])
+	rep := assemble(now, samples[0], samples[1], samples[2], samples[3], samples[4], samples[5], samples[6])
+	rep.From = from
+	return rep
+}
+
+// monthToDate is the current calendar month in Paris, and the Prometheus range
+// that reaches back to its first instant. The range is at least five minutes
+// so a query in the first seconds of the month still has a window.
+func monthToDate(now time.Time) (time.Time, string) {
+	loc, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		loc = time.UTC
+	}
+	n := now.In(loc)
+	start := time.Date(n.Year(), n.Month(), 1, 0, 0, 0, 0, loc)
+	d := n.Sub(start)
+	if d < 5*time.Minute {
+		d = 5 * time.Minute
+	}
+	return start, strconv.Itoa(int(d.Seconds())) + "s"
 }
 
 type sample struct {
@@ -231,7 +254,7 @@ func (s promSample) value() (float64, bool) {
 	return v, true
 }
 
-func assemble(now time.Time, cost24, cost7, in7, out7, cache7, hCost, hTokens, hSessions []sample) *Report {
+func assemble(now time.Time, cost, in, out, cache, hCost, hTokens, hSessions []sample) *Report {
 	type modelBucket struct{ Totals }
 	type providerBucket struct {
 		Totals
@@ -268,20 +291,17 @@ func assemble(now time.Time, cost24, cost7, in7, out7, cache7, hCost, hTokens, h
 		}
 		fn(&mod.Totals)
 	}
-	for _, s := range cost24 {
-		add(s, func(t *Totals) { t.Cost24h += s.value })
+	for _, s := range cost {
+		add(s, func(t *Totals) { t.Cost += s.value })
 	}
-	for _, s := range cost7 {
-		add(s, func(t *Totals) { t.Cost7d += s.value })
+	for _, s := range in {
+		add(s, func(t *Totals) { t.TokensIn += s.value })
 	}
-	for _, s := range in7 {
-		add(s, func(t *Totals) { t.TokensIn7d += s.value })
+	for _, s := range out {
+		add(s, func(t *Totals) { t.TokensOut += s.value })
 	}
-	for _, s := range out7 {
-		add(s, func(t *Totals) { t.TokensOut7d += s.value })
-	}
-	for _, s := range cache7 {
-		add(s, func(t *Totals) { t.CacheRead7d += s.value })
+	for _, s := range cache {
+		add(s, func(t *Totals) { t.CacheRead += s.value })
 	}
 
 	callers := make([]PersonSpend, 0, len(byPerson))
@@ -381,11 +401,8 @@ func assemble(now time.Time, cost24, cost7, in7, out7, cache7, hCost, hTokens, h
 }
 
 func spendLess(a, b Totals, nameA, nameB string) bool {
-	if a.Cost24h != b.Cost24h {
-		return a.Cost24h > b.Cost24h
-	}
-	if a.Cost7d != b.Cost7d {
-		return a.Cost7d > b.Cost7d
+	if a.Cost != b.Cost {
+		return a.Cost > b.Cost
 	}
 	return nameA < nameB
 }
