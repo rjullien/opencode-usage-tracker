@@ -353,6 +353,13 @@ Deux tableaux, deux horloges, qu'on n'additionne pas :
   fois ; un modèle compte les sessions qui l'ont utilisé. Cron, API et TUI
   tiennent sur une ligne « hors Telegram ». Ce cumul n'est pas le coût Bifrost
   de la clé `hermes-leo`.
+- **Léa, cumul Hermes.** Même forme, sur `agent="lea"`. Les personnes Telegram
+  restent séparées. L'historique OpenClaw réimporté dans `state.db` (source
+  `openclaw`) apparaît comme une personne, avec fournisseur Bedrock et le
+  modèle. Son coût est le prix catalogue Bedrock recalculé sur les tokens des
+  transcriptions, pas une facture relue chez AWS. Cron et le reste tiennent
+  sur « hors Telegram ». Ce cumul n'est pas le coût Bifrost de la clé
+  `hermes-lea`.
 
 Les noms Telegram viennent de Prometheus au moment du rendu. Ils ne sont pas
 dans ce dépôt. Le cache est le même `CACHE_TTL` que le reste de la page.

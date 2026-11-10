@@ -34,6 +34,19 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 			fmt.Fprint(w, vector(
 				series(10800000, "virtual_key_name", "hermes-lea", "provider", "bedrock", "model", "claude-opus-5-5"),
 			))
+		case strings.Contains(q, `agent="lea"`) && strings.Contains(q, "hermes_cost_usd_total"):
+			fmt.Fprint(w, vector(
+				series(12.5, "source", "openclaw", "user", "Léa", "provider", "bedrock", "model", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
+			))
+		case strings.Contains(q, `agent="lea"`) && strings.Contains(q, "hermes_tokens_total"):
+			fmt.Fprint(w, vector(
+				series(1000, "source", "openclaw", "user", "Léa", "provider", "bedrock", "model", "us.anthropic.claude-sonnet-4-20250514-v1:0", "type", "input"),
+			))
+		case strings.Contains(q, `agent="lea"`) && strings.Contains(q, "hermes_sessions_total"):
+			fmt.Fprint(w, vector(
+				series(4, "source", "openclaw", "user", "Léa"),
+				series(2, "source", "cron", "user", "aucun"),
+			))
 		case strings.Contains(q, "hermes_cost_usd_total"):
 			fmt.Fprint(w, vector(
 				series(135, "source", "telegram", "user", "Camille Jullien", "provider", "opencode-go", "model", "deepseek-v4-flash"),
@@ -119,6 +132,15 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 	if r.LeoOther.Providers[0].TokensIn != 10 || r.LeoOther.Providers[0].Models[0].Model != "deepseek-v4-flash" {
 		t.Fatalf("other model = %+v", r.LeoOther.Providers[0])
 	}
+	if len(r.Lea) != 1 || r.Lea[0].User != "Léa" || r.Lea[0].Source != "openclaw" || r.Lea[0].CostUSD != 12.5 || r.Lea[0].Sessions != 4 {
+		t.Fatalf("lea = %+v", r.Lea)
+	}
+	if len(r.Lea[0].Providers) != 1 || r.Lea[0].Providers[0].Provider != "bedrock" || r.Lea[0].Providers[0].Models[0].Model != "us.anthropic.claude-sonnet-4-20250514-v1:0" {
+		t.Fatalf("lea tree = %+v", r.Lea[0].Providers)
+	}
+	if r.LeaOther == nil || r.LeaOther.Sessions != 2 {
+		t.Fatalf("lea other = %+v", r.LeaOther)
+	}
 }
 
 func TestFetchPrometheusError(t *testing.T) {
@@ -152,8 +174,8 @@ func TestFetcherCaches(t *testing.T) {
 	if a.FetchedAt != b.FetchedAt {
 		t.Fatal("second call bypassed the cache")
 	}
-	if hits != 7 {
-		t.Fatalf("hits = %d, want 7 (one scrape of seven queries)", hits)
+	if hits != 10 {
+		t.Fatalf("hits = %d, want 10 (one scrape of ten queries)", hits)
 	}
 }
 

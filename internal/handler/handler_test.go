@@ -874,6 +874,18 @@ func TestSpendSectionRendersKeysAndLeoUsers(t *testing.T) {
 			},
 		},
 		LeoOther: &spend.LeoUser{Source: "other", LeoTotals: spend.LeoTotals{CostUSD: 4, Sessions: 173}},
+		Lea: []spend.LeoUser{{
+			User: "Léa", Source: "openclaw",
+			LeoTotals: spend.LeoTotals{CostUSD: 1846, TokensIn: 615e6, TokensOut: 1.2e6, Sessions: 80},
+			Providers: []spend.LeoProvider{{
+				Provider:  "bedrock",
+				LeoTotals: spend.LeoTotals{CostUSD: 1846, TokensIn: 615e6, TokensOut: 1.2e6, Sessions: 80},
+				Models: []spend.LeoModel{{
+					Model:     "us.anthropic.claude-sonnet-4-20250514-v1:0",
+					LeoTotals: spend.LeoTotals{CostUSD: 1846, TokensIn: 615e6, TokensOut: 1.2e6, Sessions: 80},
+				}},
+			}},
+		}},
 	}})
 	body := renderDashboard(t, h)
 	mustContain(t, body,
@@ -881,6 +893,8 @@ func TestSpendSectionRendersKeysAndLeoUsers(t *testing.T) {
 		"Depuis le 01/11",
 		"Camille Jullien", "deepseek-v4-flash", "9 k · 90%", "hors Telegram", "pas une facture",
 		"Ce n'est pas le coût Bifrost de la clé Léo",
+		"Léa — cumul Hermes", "us.anthropic.claude-sonnet-4-20250514-v1:0",
+		"prix catalogue Bedrock",
 		"Consommé moyen du parc",
 	)
 }

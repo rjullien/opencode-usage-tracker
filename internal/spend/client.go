@@ -1,8 +1,8 @@
 // Package spend reads per-caller consumption from Prometheus.
 //
 // Bifrost counters (cost, tokens) are reset when the gateway restarts, so the
-// dashboard asks for increase() over a window. Hermes Leo republishes lifetime
-// totals from its state database; those are read as the current sample.
+// dashboard asks for increase() over a window. Hermes republishes lifetime
+// totals from each agent's state database; those are read as the current sample.
 // The two numbers are different clocks and must not be added together.
 package spend
 
@@ -33,6 +33,10 @@ const (
 	qHermesCost     = dedupe + `(hermes_cost_usd_total{agent="leo"})`
 	qHermesTokens   = dedupe + `(hermes_tokens_total{agent="leo"})`
 	qHermesSessions = dedupe + `(hermes_sessions_total{agent="leo"})`
+
+	qHermesLeaCost     = dedupe + `(hermes_cost_usd_total{agent="lea"})`
+	qHermesLeaTokens   = dedupe + `(hermes_tokens_total{agent="lea"})`
+	qHermesLeaSessions = dedupe + `(hermes_sessions_total{agent="lea"})`
 )
 
 // Totals is one consumption bucket over the current calendar month (Paris).
@@ -117,6 +121,10 @@ type Report struct {
 	Leo       []LeoUser     `json:"leo"`
 	// LeoOther rolls cron, API and TUI into one line. Nil when that remainder is empty.
 	LeoOther *LeoUser `json:"leoOther,omitempty"`
+	// Lea is Hermes Léa: Telegram plus the imported OpenClaw history.
+	// LeaOther rolls the remaining sources (cron) into one line.
+	Lea      []LeoUser `json:"lea,omitempty"`
+	LeaOther *LeoUser  `json:"leaOther,omitempty"`
 }
 
 // Client queries the Prometheus HTTP API.
@@ -144,6 +152,7 @@ func (c *Client) Fetch() *Report {
 		byCaller + `bifrost_output_tokens_total[` + rng + `])))`,
 		byCaller + `bifrost_cache_read_input_tokens_total[` + rng + `])))`,
 		qHermesCost, qHermesTokens, qHermesSessions,
+		qHermesLeaCost, qHermesLeaTokens, qHermesLeaSessions,
 	}
 	samples := make([][]sample, len(queries))
 	errs := make([]error, len(queries))
@@ -163,7 +172,7 @@ func (c *Client) Fetch() *Report {
 			return &Report{FetchedAt: now, From: from, Error: err.Error()}
 		}
 	}
-	rep := assemble(now, samples[0], samples[1], samples[2], samples[3], samples[4], samples[5], samples[6])
+	rep := assemble(now, samples[0], samples[1], samples[2], samples[3], samples[4], samples[5], samples[6], samples[7], samples[8], samples[9])
 	rep.From = from
 	return rep
 }
@@ -277,7 +286,7 @@ func (s promSample) value() (float64, bool) {
 	return v, true
 }
 
-func assemble(now time.Time, cost, in, out, cache, hCost, hTokens, hSessions []sample) *Report {
+func assemble(now time.Time, cost, in, out, cache, hCost, hTokens, hSessions, leaCost, leaTokens, leaSessions []sample) *Report {
 	type modelBucket struct{ Totals }
 	type providerBucket struct {
 		Totals
@@ -358,16 +367,21 @@ func assemble(now time.Time, cost, in, out, cache, hCost, hTokens, hSessions []s
 		return spendLess(callers[i].Totals, callers[j].Totals, callers[i].VirtualKey, callers[j].VirtualKey)
 	})
 
-	leo, other := assembleLeo(hCost, hTokens, hSessions)
-	return &Report{FetchedAt: now, People: callers, Leo: leo, LeoOther: other}
+	leo, other := assembleLeo(hCost, hTokens, hSessions, func(source string) bool { return source == "telegram" })
+	lea, leaOther := assembleLeo(leaCost, leaTokens, leaSessions, func(source string) bool {
+		return source == "telegram" || source == "openclaw"
+	})
+	return &Report{FetchedAt: now, People: callers, Leo: leo, LeoOther: other, Lea: lea, LeaOther: leaOther}
 }
 
-// assembleLeo builds the Telegram tree. A sample without provider and model
-// stays on the person (the exporter before the split, and the per-user
-// session count). A sample with either label also feeds that provider and model.
-// Model session counts are not added to the person: one session can use
-// several models, and the person total counts each session once.
-func assembleLeo(hCost, hTokens, hSessions []sample) ([]LeoUser, *LeoUser) {
+// assembleLeo builds one agent's tree. keepSource decides which sources stay
+// as their own person; the rest fold into a single "other" line. A sample
+// without provider and model stays on the person (the exporter before the
+// split, and the per-user session count). A sample with either label also
+// feeds that provider and model. Model session counts are not added to the
+// person: one session can use several models, and the person total counts
+// each session once.
+func assembleLeo(hCost, hTokens, hSessions []sample, keepSource func(string) bool) ([]LeoUser, *LeoUser) {
 	type modelBucket struct{ LeoTotals }
 	type providerBucket struct {
 		LeoTotals
@@ -510,7 +524,7 @@ func assembleLeo(hCost, hTokens, hSessions []sample) ([]LeoUser, *LeoUser) {
 		if p.empty() && len(p.providers) == 0 {
 			continue
 		}
-		if p.source == "telegram" {
+		if keepSource(p.source) {
 			leo = append(leo, finish(p))
 			continue
 		}

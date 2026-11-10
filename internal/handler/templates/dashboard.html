@@ -712,6 +712,35 @@
             Ce n'est pas le coût Bifrost de la clé Léo.
             Le % cache est cache ÷ (tokens in + cache) : ici les tokens in n'incluent pas le cache.
           </div>
+
+          {{if or $s.Lea $s.LeaOther}}
+          <h4>Léa — cumul Hermes</h4>
+          <div class="spend-scroll">
+            <div class="spend-tree with-sessions">
+              <div class="spend-line with-sessions hd">
+                <span>Personne</span>
+                <span class="num">Coût</span>
+                <span class="num">Tokens in</span>
+                <span class="num">Cache</span>
+                <span class="num">Tokens out</span>
+                <span class="num">Sessions</span>
+              </div>
+              {{range $s.Lea}}
+                {{template "leoPerson" .}}
+              {{end}}
+              {{with $s.LeaOther}}
+                {{template "leoPerson" .}}
+              {{end}}
+            </div>
+          </div>
+          <div class="hero-note">
+            Cumul Hermes Léa, même ventilation que Léo. L'historique OpenClaw
+            (transcriptions jusqu'au 24 septembre) est réimporté : tokens d'origine,
+            prix catalogue Bedrock du modèle au profil US. La sauvegarde n'avait
+            plus l'index des personnes, donc cet historique tient sur une personne.
+            Ce cumul est celui de state.db, distinct du coût Bifrost du mois.
+          </div>
+          {{end}}
         {{end}}
 
         <div class="fetch-time">relevé {{fmtTime $s.FetchedAt}}</div>
