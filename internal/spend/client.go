@@ -198,13 +198,22 @@ func (c *Client) Fetch(id string) *Report {
 
 // mergeBifrost appends the window gauges (history from Hermes, Bifrost shape)
 // to the live counters. Input, output and cache read arrive on one tokens
-// series distinguished by type.
+// series distinguished by type. GitHub Copilot is dropped: it is not Bifrost.
 func mergeBifrost(cost, in, out, cache, windowCost, windowTokens []sample) (c, i, o, r []sample) {
-	c = append(append([]sample{}, cost...), windowCost...)
+	c = append([]sample{}, cost...)
+	for _, s := range windowCost {
+		if strings.TrimSpace(s.labels["provider"]) == "github-copilot" {
+			continue
+		}
+		c = append(c, s)
+	}
 	i = append([]sample{}, in...)
 	o = append([]sample{}, out...)
 	r = append([]sample{}, cache...)
 	for _, s := range windowTokens {
+		if strings.TrimSpace(s.labels["provider"]) == "github-copilot" {
+			continue
+		}
 		switch s.labels["type"] {
 		case "input":
 			i = append(i, s)
@@ -472,6 +481,13 @@ func bifrostFromHermes(key string, users []LeoUser, other *LeoUser) PersonSpend 
 			name := strings.TrimSpace(prov.Provider)
 			if name == "" {
 				name = "inconnu"
+			}
+			// GitHub Copilot is not a Bifrost provider. It stays on the
+			// per-user Hermes tree and is removed from the key total, so it
+			// does not fall through to the unlabeled gap.
+			if name == "github-copilot" {
+				add(&total, -prov.CostUSD, -prov.TokensIn, -prov.TokensOut, -prov.CacheRead)
+				continue
 			}
 			dst, ok := providers[name]
 			if !ok {

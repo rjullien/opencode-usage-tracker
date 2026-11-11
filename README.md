@@ -331,10 +331,13 @@ injoignable n'empêche pas le rendu OpenCode, Devin ou Cursor.
 
 Trois tableaux, deux horloges, qu'on n'additionne pas :
 
-- **Par clé virtuelle.** `increase()` sur `bifrost_cost_total`,
+- **Par clé Bifrost.** `increase()` sur `bifrost_cost_total`,
   `bifrost_input_tokens_total` et `bifrost_output_tokens_total`, groupé par
   `virtual_key_name` et `provider`, plus `bifrost_cache_read_input_tokens_total`.
-  Une ligne par personne. Un clic ouvre les fournisseurs, un second les modèles.
+  Une ligne par clé. Un clic ouvre les fournisseurs, un second les modèles.
+  GitHub Copilot n'est pas dans Bifrost : il reste dans le tableau de Léo.
+  `opencode-cli` est le forfait OpenCode Go du CLI local (backfill depuis
+  `~/.local/share/opencode/opencode.db`), hors Bifrost.
   Colonnes : coût, tokens in, cache et tokens out. Au-dessus des tableaux, un
   sélecteur choisit la fenêtre : 1 mois (le mois calendaire en cours, défaut),
   3 mois, 6 mois ou 1 an, chaque fois depuis le 1er à minuit, heure de Paris.

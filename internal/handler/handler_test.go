@@ -892,7 +892,7 @@ func TestSpendSectionRendersKeysAndLeoUsers(t *testing.T) {
 	body := renderDashboard(t, h)
 	mustContain(t, body,
 		"Léa", "Bedrock", "claude-opus-5-5", "Emma", "OpenCode Go", "50,35 $", "11,3 M", "10,8 M · 96%",
-		"Depuis le 01/11", "1 mois", "3 mois", "6 mois", "1 an", "spend-range",
+		"Depuis le 01/11", "1 mois", "3 mois", "6 mois", "1 an", "spend-range", "Par clé Bifrost",
 		"Camille Jullien", "deepseek-v4-flash", "9 k · 90%", "hors Telegram", "pas une facture",
 		"Ce n'est pas le coût Bifrost de la clé Léo",
 		"Léa — Hermes", "us.anthropic.claude-sonnet-4-20250514-v1:0",
