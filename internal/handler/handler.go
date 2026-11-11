@@ -892,8 +892,6 @@ func vkLabel(id string) string {
 		return "Baptiste"
 	case "tailscale-emma":
 		return "Emma"
-	case "opencode-cli":
-		return "OpenCode CLI"
 	default:
 		return id
 	}
