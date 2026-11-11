@@ -249,7 +249,21 @@
     font-variant-numeric: tabular-nums;
   }
   .spend-table th.num, .spend-table td.num { text-align: right; white-space: nowrap; }
-  .spend-section .hero-note { margin-top: 0.45rem; }
+  .range-row {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin: 0.15rem 0 0.85rem;
+    font-size: 0.85rem;
+  }
+  .range-row select {
+    color: inherit;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.28rem 0.45rem;
+    font: inherit;
+  }
   .spend-tree { min-width: 640px; }
   .spend-tree.with-sessions { min-width: 760px; }
   .spend-line {
@@ -632,6 +646,15 @@
         {{if $s.Error}}
           <div class="error-msg">{{$s.Error}}</div>
         {{else}}
+          <div class="range-row">
+            <label for="spend-range">Durée</label>
+            <select id="spend-range">
+              <option value="1m"{{if eq $s.Window "1m"}} selected{{end}}>1 mois</option>
+              <option value="3m"{{if eq $s.Window "3m"}} selected{{end}}>3 mois</option>
+              <option value="6m"{{if eq $s.Window "6m"}} selected{{end}}>6 mois</option>
+              <option value="1y"{{if eq $s.Window "1y"}} selected{{end}}>1 an</option>
+            </select>
+          </div>
           <h4>Par personne</h4>
           {{if $s.People}}
             <div class="spend-scroll">
@@ -675,7 +698,7 @@
             <div class="hero-note">Aucune série Bifrost.</div>
           {{end}}
           <div class="hero-note">
-            Depuis le {{fmtDay $s.From}}, mois en cours. Coût, tokens et cache sont sur cette fenêtre.
+            Depuis le {{fmtDay $s.From}}, {{$s.WindowLabel}}. Coût, tokens et cache sont sur cette fenêtre.
             Un redémarrage de Bifrost remet ses compteurs à zéro.
             OpenCode Go : prix catalogue imputé au forfait, pas une facture. Bedrock : USD.
             Les deux ne s'additionnent pas.
@@ -706,7 +729,8 @@
             <div class="hero-note">Aucune session Hermes.</div>
           {{end}}
           <div class="hero-note">
-            Cumul enregistré par Hermes, ventilé par fournisseur et par modèle.
+            Depuis le {{fmtDay $s.From}}, {{$s.WindowLabel}}. Hausse du cumul Hermes sur cette fenêtre,
+            ventilée par fournisseur et par modèle.
             Le coût d'une personne est la somme de ses modèles.
             Les sessions en tête comptent chaque session une fois ; un modèle compte les sessions qui l'ont utilisé.
             Ce n'est pas le coût Bifrost de la clé Léo.
@@ -714,7 +738,7 @@
           </div>
 
           {{if or $s.Lea $s.LeaOther}}
-          <h4>Léa — cumul Hermes</h4>
+          <h4>Léa — Hermes</h4>
           <div class="spend-scroll">
             <div class="spend-tree with-sessions">
               <div class="spend-line with-sessions hd">
@@ -734,11 +758,10 @@
             </div>
           </div>
           <div class="hero-note">
-            Cumul Hermes Léa, même ventilation que Léo. L'historique OpenClaw
-            (transcriptions jusqu'au 24 septembre) est réimporté : tokens d'origine,
-            prix catalogue Bedrock du modèle au profil US. La sauvegarde n'avait
-            plus l'index des personnes, donc cet historique tient sur une personne.
-            Ce cumul est celui de state.db, distinct du coût Bifrost du mois.
+            Depuis le {{fmtDay $s.From}}, {{$s.WindowLabel}}, même fenêtre que Léo.
+            L'historique OpenClaw compte à partir du jour où il a été réimporté dans Hermes.
+            La sauvegarde n'avait plus l'index des personnes, donc cet historique tient sur une personne.
+            Ce cumul est celui de state.db, distinct du coût Bifrost.
           </div>
           {{end}}
         {{end}}
@@ -827,6 +850,15 @@
 
   arm();
   window.__refreshDashboard = refresh;
+  document.addEventListener("change", function (ev) {
+    var sel = ev.target;
+    if (!sel || sel.id !== "spend-range") return;
+    var url = new URL(location.href);
+    if (!sel.value || sel.value === "1m") url.searchParams.delete("duree");
+    else url.searchParams.set("duree", sel.value);
+    history.replaceState(null, "", url);
+    refresh();
+  });
 })();
 </script>
 </body>

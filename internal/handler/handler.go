@@ -73,7 +73,7 @@ type CursorSource interface {
 // OPTIONAL: a nil source omits the section. A failed scrape is carried on the
 // report and must not disturb the quota cards.
 type SpendSource interface {
-	Report() *spend.Report
+	Report(window string) *spend.Report
 }
 
 // Handler serves the dashboard and API.
@@ -578,7 +578,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.devin, h.cursor, h.spendNow(), h.now())
+	data := buildDashboardData(h.poller.Statuses(), h.weightsNow(), h.devin, h.cursor, h.spendNow(r), h.now())
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := h.tmpl.ExecuteTemplate(w, "dashboard.html", data); err != nil {
@@ -639,7 +639,7 @@ func (h *Handler) APISpend(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	rep := h.spend.Report()
+	rep := h.spend.Report(spendWindow(r))
 	if rep == nil {
 		http.NotFound(w, r)
 		return
@@ -650,11 +650,20 @@ func (h *Handler) APISpend(w http.ResponseWriter, r *http.Request) {
 	enc.Encode(rep)
 }
 
-func (h *Handler) spendNow() *spend.Report {
+func (h *Handler) spendNow(r *http.Request) *spend.Report {
 	if h.spend == nil {
 		return nil
 	}
-	return h.spend.Report()
+	return h.spend.Report(spendWindow(r))
+}
+
+// spendWindow is the duration selector. Missing or unknown values stay on the
+// current calendar month.
+func spendWindow(r *http.Request) string {
+	if r == nil {
+		return "1m"
+	}
+	return spend.NormalizeWindow(r.URL.Query().Get("duree"))
 }
 
 func (h *Handler) Health(w http.ResponseWriter, r *http.Request) {

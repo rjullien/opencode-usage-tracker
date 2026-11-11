@@ -76,7 +76,7 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r := NewClient(srv.URL, 2*time.Second).Fetch()
+	r := NewClient(srv.URL, 2*time.Second).Fetch("1m")
 	if r.Error != "" {
 		t.Fatalf("error: %s", r.Error)
 	}
@@ -92,6 +92,9 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 	}
 	if r.From.Day() != 1 || r.From.Month() != time.Now().Month() {
 		t.Fatalf("from = %s, want the 1st of this month", r.From)
+	}
+	if r.Window != "1m" || r.WindowLabel != "1 mois" {
+		t.Fatalf("window = %s %s", r.Window, r.WindowLabel)
 	}
 	if len(lea.Providers) != 1 || lea.Providers[0].Provider != "bedrock" || len(lea.Providers[0].Models) != 1 || lea.Providers[0].Models[0].Model != "claude-opus-5-5" {
 		t.Fatalf("lea tree = %+v", lea.Providers)
@@ -150,7 +153,7 @@ func TestFetchPrometheusError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r := NewClient(srv.URL, 2*time.Second).Fetch()
+	r := NewClient(srv.URL, 2*time.Second).Fetch("1m")
 	if r.Error == "" || !strings.Contains(r.Error, "parse error") {
 		t.Fatalf("error = %q", r.Error)
 	}
@@ -169,13 +172,51 @@ func TestFetcherCaches(t *testing.T) {
 	defer srv.Close()
 
 	f := NewFetcher(NewClient(srv.URL, 2*time.Second), time.Minute)
-	a := f.Report()
-	b := f.Report()
+	a := f.Report("1m")
+	b := f.Report("1m")
 	if a.FetchedAt != b.FetchedAt {
 		t.Fatal("second call bypassed the cache")
 	}
 	if hits != 10 {
 		t.Fatalf("hits = %d, want 10 (one scrape of ten queries)", hits)
+	}
+	f.Report("3m")
+	if hits != 20 {
+		t.Fatalf("hits = %d, want 20 (a second window is its own scrape)", hits)
+	}
+}
+
+func TestWindowBounds(t *testing.T) {
+	// 11 Nov 2026 12:00 UTC is 13:00 in Paris, still November.
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	paris, err := time.LoadLocation("Europe/Paris")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		id    string
+		month time.Month
+		year  int
+		label string
+	}{
+		{"1m", time.November, 2026, "1 mois"},
+		{"3m", time.September, 2026, "3 mois"},
+		{"6m", time.June, 2026, "6 mois"},
+		{"1y", time.December, 2025, "1 an"},
+		{"nope", time.November, 2026, "1 mois"},
+	}
+	for _, tc := range cases {
+		from, rng, label := windowBounds(now, NormalizeWindow(tc.id))
+		from = from.In(paris)
+		if from.Day() != 1 || from.Month() != tc.month || from.Year() != tc.year || from.Hour() != 0 {
+			t.Errorf("%s from = %s", tc.id, from)
+		}
+		if label != tc.label {
+			t.Errorf("%s label = %s", tc.id, label)
+		}
+		if !strings.HasSuffix(rng, "s") {
+			t.Errorf("%s range = %s", tc.id, rng)
+		}
 	}
 }
 

@@ -838,8 +838,10 @@ func TestAPICursorNotFoundWithoutSource(t *testing.T) {
 func TestSpendSectionRendersKeysAndLeoUsers(t *testing.T) {
 	h := newTestHandler(t)
 	h.UseSpend(stubSpend{r: &spend.Report{
-		FetchedAt: captureNow,
-		From:      time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
+		FetchedAt:   captureNow,
+		From:        time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
+		Window:      "1m",
+		WindowLabel: "1 mois",
 		People: []spend.PersonSpend{{
 			VirtualKey: "hermes-lea",
 			Totals:     spend.Totals{Cost: 50.35, TokensIn: 11.3e6, TokensOut: 23000, CacheRead: 10.8e6},
@@ -890,11 +892,11 @@ func TestSpendSectionRendersKeysAndLeoUsers(t *testing.T) {
 	body := renderDashboard(t, h)
 	mustContain(t, body,
 		"Léa", "Bedrock", "claude-opus-5-5", "Emma", "OpenCode Go", "50,35 $", "11,3 M", "10,8 M · 96%",
-		"Depuis le 01/11",
+		"Depuis le 01/11", "1 mois", "3 mois", "6 mois", "1 an", "spend-range",
 		"Camille Jullien", "deepseek-v4-flash", "9 k · 90%", "hors Telegram", "pas une facture",
 		"Ce n'est pas le coût Bifrost de la clé Léo",
-		"Léa — cumul Hermes", "us.anthropic.claude-sonnet-4-20250514-v1:0",
-		"prix catalogue Bedrock",
+		"Léa — Hermes", "us.anthropic.claude-sonnet-4-20250514-v1:0",
+		"historique OpenClaw",
 		"Consommé moyen du parc",
 	)
 }
@@ -946,4 +948,4 @@ func TestAPISpendNotFoundWithoutSource(t *testing.T) {
 
 type stubSpend struct{ r *spend.Report }
 
-func (s stubSpend) Report() *spend.Report { return s.r }
+func (s stubSpend) Report(string) *spend.Report { return s.r }

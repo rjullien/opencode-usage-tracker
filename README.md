@@ -329,37 +329,40 @@ Sans `PROMETHEUS_URL`, rien ne change : la section est absente et `/api/spend` r
 Avec l'URL, une carte **Consommation** apparaît sous les quotas. Un Prometheus
 injoignable n'empêche pas le rendu OpenCode, Devin ou Cursor.
 
-Deux tableaux, deux horloges, qu'on n'additionne pas :
+Trois tableaux, deux horloges, qu'on n'additionne pas :
 
 - **Par clé virtuelle.** `increase()` sur `bifrost_cost_total`,
   `bifrost_input_tokens_total` et `bifrost_output_tokens_total`, groupé par
   `virtual_key_name` et `provider`, plus `bifrost_cache_read_input_tokens_total`.
   Une ligne par personne. Un clic ouvre les fournisseurs, un second les modèles.
-  Colonnes : coût, tokens in, cache et tokens out depuis le 1er du mois
-  (heure de Paris). Le % cache est cache ÷ tokens in : chez Bifrost les
+  Colonnes : coût, tokens in, cache et tokens out. Au-dessus des tableaux, un
+  sélecteur choisit la fenêtre : 1 mois (le mois calendaire en cours, défaut),
+  3 mois, 6 mois ou 1 an, chaque fois depuis le 1er à minuit, heure de Paris.
+  Le % cache est cache ÷ tokens in : chez Bifrost les
   tokens in incluent déjà le cache. Les compteurs Bifrost repartent à zéro
-  au redémarrage du gateway, donc un redémarrage en cours de mois coupe le
+  au redémarrage du gateway, donc un redémarrage en cours de fenêtre coupe le
   cumul. Le $ OpenCode Go est le prix catalogue
   imputé au forfait, pas une facture. Le $ Bedrock est réel. Une clé inconnue
   s'affiche sous son id.
-- **Léo, par personne Telegram.** Valeur courante de `hermes_cost_usd_total`,
-  `hermes_tokens_total` et `hermes_sessions_total` (`agent="leo"`), avec les
-  labels `provider` et `model` quand l'exporter les publie. Un clic ouvre les
-  fournisseurs, un second les modèles, comme pour Bifrost. Sans ces labels la
-  ligne reste plate. Le cumul vient de `state.db` (`input`, `cache_read`,
-  `cache_write`, `output`), ventilé par la route qui a servi les tokens.
-  Le % cache est cache ÷ (tokens in + cache) : ici les tokens in n'incluent
-  pas le cache. Les sessions en tête de personne comptent chaque session une
-  fois ; un modèle compte les sessions qui l'ont utilisé. Cron, API et TUI
-  tiennent sur une ligne « hors Telegram ». Ce cumul n'est pas le coût Bifrost
-  de la clé `hermes-leo`.
-- **Léa, cumul Hermes.** Même forme, sur `agent="lea"`. Les personnes Telegram
-  restent séparées. L'historique OpenClaw réimporté dans `state.db` (source
-  `openclaw`) apparaît comme une personne, avec fournisseur Bedrock et le
-  modèle. Son coût est le prix catalogue Bedrock recalculé sur les tokens des
-  transcriptions, pas une facture relue chez AWS. Cron et le reste tiennent
-  sur « hors Telegram ». Ce cumul n'est pas le coût Bifrost de la clé
-  `hermes-lea`.
+- **Léo, par personne Telegram.** `increase()` sur `hermes_cost_usd_total`,
+  `hermes_tokens_total` et `hermes_sessions_total` (`agent="leo"`) pour la
+  même fenêtre, avec les labels `provider` et `model` quand l'exporter les
+  publie. Un clic ouvre les fournisseurs, un second les modèles, comme pour
+  Bifrost. Sans ces labels la ligne reste plate. Le cumul vient de `state.db`
+  (`input`, `cache_read`, `cache_write`, `output`), ventilé par la route qui
+  a servi les tokens. La fenêtre est la hausse de ce cumul, pas le total
+  depuis toujours. Le % cache est cache ÷ (tokens in + cache) : ici les
+  tokens in n'incluent pas le cache. Les sessions en tête de personne comptent
+  chaque session une fois ; un modèle compte les sessions qui l'ont utilisé.
+  Cron, API et TUI tiennent sur une ligne « hors Telegram ». Ce cumul n'est
+  pas le coût Bifrost de la clé `hermes-leo`.
+- **Léa, Hermes.** Même fenêtre et même forme, sur `agent="lea"`. Les
+  personnes Telegram restent séparées. L'historique OpenClaw réimporté dans
+  `state.db` (source `openclaw`) apparaît comme une personne, avec fournisseur
+  Bedrock et le modèle. Il compte dans la fenêtre qui contient le jour de
+  l'import. Son coût est le prix catalogue Bedrock recalculé sur les tokens
+  des transcriptions. Cron et le reste tiennent sur « hors Telegram ». Ce
+  cumul n'est pas le coût Bifrost de la clé `hermes-lea`.
 
 Les noms Telegram viennent de Prometheus au moment du rendu. Ils ne sont pas
 dans ce dépôt. Le cache est le même `CACHE_TTL` que le reste de la page.

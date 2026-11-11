@@ -2,8 +2,9 @@
 //
 // Bifrost counters (cost, tokens) are reset when the gateway restarts, so the
 // dashboard asks for increase() over a window. Hermes republishes lifetime
-// totals from each agent's state database; those are read as the current sample.
-// The two numbers are different clocks and must not be added together.
+// totals from each agent's state database; increase() over the same window is
+// how much that total grew. The two numbers are different clocks and must not
+// be added together.
 package spend
 
 import (
@@ -29,14 +30,6 @@ const (
 	dedupe = `max without (prometheus_replica, instance, pod, endpoint, service, namespace, container, job)`
 
 	byCaller = `sum by (virtual_key_name, provider, model) (` + dedupe + `(increase(`
-
-	qHermesCost     = dedupe + `(hermes_cost_usd_total{agent="leo"})`
-	qHermesTokens   = dedupe + `(hermes_tokens_total{agent="leo"})`
-	qHermesSessions = dedupe + `(hermes_sessions_total{agent="leo"})`
-
-	qHermesLeaCost     = dedupe + `(hermes_cost_usd_total{agent="lea"})`
-	qHermesLeaTokens   = dedupe + `(hermes_tokens_total{agent="lea"})`
-	qHermesLeaSessions = dedupe + `(hermes_sessions_total{agent="lea"})`
 )
 
 // Totals is one consumption bucket over the current calendar month (Paris).
@@ -114,11 +107,13 @@ func (t LeoTotals) empty() bool {
 // Report is the consumption snapshot. Error set means nothing else is usable:
 // a partial table would mix a failed window with a live one.
 type Report struct {
-	FetchedAt time.Time     `json:"fetchedAt"`
-	From      time.Time     `json:"from"`
-	Error     string        `json:"error,omitempty"`
-	People    []PersonSpend `json:"people"`
-	Leo       []LeoUser     `json:"leo"`
+	FetchedAt   time.Time     `json:"fetchedAt"`
+	From        time.Time     `json:"from"`
+	Window      string        `json:"window"`
+	WindowLabel string        `json:"windowLabel"`
+	Error       string        `json:"error,omitempty"`
+	People      []PersonSpend `json:"people"`
+	Leo         []LeoUser     `json:"leo"`
 	// LeoOther rolls cron, API and TUI into one line. Nil when that remainder is empty.
 	LeoOther *LeoUser `json:"leoOther,omitempty"`
 	// Lea is Hermes Léa: Telegram plus the imported OpenClaw history.
@@ -141,18 +136,28 @@ func NewClient(baseURL string, timeout time.Duration) *Client {
 	}
 }
 
-// Fetch runs the consumption queries. A transport or query error comes back on
-// Report.Error; Fetch itself does not fail, so the dashboard can still render.
-func (c *Client) Fetch() *Report {
+// Fetch runs the consumption queries for one window. id is 1m, 3m, 6m or 1y;
+// anything else is the current calendar month. A transport or query error
+// comes back on Report.Error; Fetch itself does not fail, so the dashboard
+// can still render.
+func (c *Client) Fetch(id string) *Report {
 	now := time.Now()
-	from, rng := monthToDate(now)
+	id = NormalizeWindow(id)
+	from, rng, label := windowBounds(now, id)
+	hermes := func(metric, agent string) string {
+		return dedupe + `(increase(` + metric + `{agent="` + agent + `"}[` + rng + `]))`
+	}
 	queries := []string{
 		byCaller + `bifrost_cost_total[` + rng + `])))`,
 		byCaller + `bifrost_input_tokens_total[` + rng + `])))`,
 		byCaller + `bifrost_output_tokens_total[` + rng + `])))`,
 		byCaller + `bifrost_cache_read_input_tokens_total[` + rng + `])))`,
-		qHermesCost, qHermesTokens, qHermesSessions,
-		qHermesLeaCost, qHermesLeaTokens, qHermesLeaSessions,
+		hermes("hermes_cost_usd_total", "leo"),
+		hermes("hermes_tokens_total", "leo"),
+		hermes("hermes_sessions_total", "leo"),
+		hermes("hermes_cost_usd_total", "lea"),
+		hermes("hermes_tokens_total", "lea"),
+		hermes("hermes_sessions_total", "lea"),
 	}
 	samples := make([][]sample, len(queries))
 	errs := make([]error, len(queries))
@@ -169,29 +174,52 @@ func (c *Client) Fetch() *Report {
 
 	for _, err := range errs {
 		if err != nil {
-			return &Report{FetchedAt: now, From: from, Error: err.Error()}
+			return &Report{FetchedAt: now, From: from, Window: id, WindowLabel: label, Error: err.Error()}
 		}
 	}
 	rep := assemble(now, samples[0], samples[1], samples[2], samples[3], samples[4], samples[5], samples[6], samples[7], samples[8], samples[9])
 	rep.From = from
+	rep.Window = id
+	rep.WindowLabel = label
 	return rep
 }
 
-// monthToDate is the current calendar month in Paris, and the Prometheus range
-// that reaches back to its first instant. The range is at least five minutes
-// so a query in the first seconds of the month still has a window.
-func monthToDate(now time.Time) (time.Time, string) {
+// NormalizeWindow accepts the selector values. Anything else is one month.
+func NormalizeWindow(id string) string {
+	switch id {
+	case "3m", "6m", "1y":
+		return id
+	default:
+		return "1m"
+	}
+}
+
+// windowBounds is the start of the selected span in Paris, and the Prometheus
+// range that reaches back to it. One month is the current calendar month.
+// Longer choices walk back whole months and still start on the 1st at 00:00.
+// The range is at least five minutes so a query in the first seconds of the
+// span still has a window.
+func windowBounds(now time.Time, id string) (time.Time, string, string) {
+	months, label := 1, "1 mois"
+	switch id {
+	case "3m":
+		months, label = 3, "3 mois"
+	case "6m":
+		months, label = 6, "6 mois"
+	case "1y":
+		months, label = 12, "1 an"
+	}
 	loc, err := time.LoadLocation("Europe/Paris")
 	if err != nil {
 		loc = time.UTC
 	}
 	n := now.In(loc)
-	start := time.Date(n.Year(), n.Month(), 1, 0, 0, 0, 0, loc)
+	start := time.Date(n.Year(), n.Month()-time.Month(months-1), 1, 0, 0, 0, 0, loc)
 	d := n.Sub(start)
 	if d < 5*time.Minute {
 		d = 5 * time.Minute
 	}
-	return start, strconv.Itoa(int(d.Seconds())) + "s"
+	return start, strconv.Itoa(int(d.Seconds())) + "s", label
 }
 
 type sample struct {
