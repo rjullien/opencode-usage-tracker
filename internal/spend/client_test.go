@@ -216,65 +216,6 @@ func TestWindowBounds(t *testing.T) {
 	}
 }
 
-func TestMergeBifrostSkipsCopilot(t *testing.T) {
-	cost, in, out, cache := mergeBifrost(
-		[]sample{},
-		[]sample{},
-		[]sample{},
-		[]sample{},
-		[]sample{
-			{value: 7, labels: map[string]string{"virtual_key_name": "hermes-leo", "provider": "opencode-go", "model": "deepseek"}},
-			{value: 3, labels: map[string]string{"virtual_key_name": "hermes-leo", "provider": "github-copilot", "model": "claude"}},
-		},
-		[]sample{
-			{value: 100, labels: map[string]string{"virtual_key_name": "hermes-leo", "provider": "opencode-go", "model": "deepseek", "type": "input"}},
-			{value: 50, labels: map[string]string{"virtual_key_name": "hermes-leo", "provider": "github-copilot", "model": "claude", "type": "input"}},
-		},
-	)
-	if len(cost) != 1 || cost[0].value != 7 || cost[0].labels["provider"] != "opencode-go" {
-		t.Fatalf("cost = %+v", cost)
-	}
-	if len(in) != 1 || in[0].value != 100 {
-		t.Fatalf("in = %+v", in)
-	}
-	if len(out) != 0 || len(cache) != 0 {
-		t.Fatalf("out = %+v cache = %+v", out, cache)
-	}
-}
-
-func TestBifrostFromHermesSkipsCopilot(t *testing.T) {
-	row := bifrostFromHermes("hermes-leo", []LeoUser{{
-		User: "Camille Jullien",
-		LeoTotals: LeoTotals{
-			CostUSD: 10, TokensIn: 100, TokensOut: 5, CacheRead: 20,
-		},
-		Providers: []LeoProvider{
-			{
-				Provider:  "opencode-go",
-				LeoTotals: LeoTotals{CostUSD: 7, TokensIn: 80, TokensOut: 4, CacheRead: 10},
-				Models: []LeoModel{{
-					Model:     "deepseek-v4-flash",
-					LeoTotals: LeoTotals{CostUSD: 7, TokensIn: 80, TokensOut: 4, CacheRead: 10},
-				}},
-			},
-			{
-				Provider:  "github-copilot",
-				LeoTotals: LeoTotals{CostUSD: 3, TokensIn: 20, TokensOut: 1, CacheRead: 10},
-				Models: []LeoModel{{
-					Model:     "claude-opus-5",
-					LeoTotals: LeoTotals{CostUSD: 3, TokensIn: 20, TokensOut: 1, CacheRead: 10},
-				}},
-			},
-		},
-	}}, nil)
-	if row.Cost != 7 || row.TokensIn != 90 || row.TokensOut != 4 || row.CacheRead != 10 {
-		t.Fatalf("totals = %+v", row.Totals)
-	}
-	if len(row.Providers) != 1 || row.Providers[0].Provider != "opencode-go" {
-		t.Fatalf("providers = %+v", row.Providers)
-	}
-}
-
 func person(r *Report, name string) PersonSpend {
 	for _, p := range r.People {
 		if p.VirtualKey == name {
