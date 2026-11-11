@@ -729,8 +729,9 @@
             <div class="hero-note">Aucune session Hermes.</div>
           {{end}}
           <div class="hero-note">
-            Depuis le {{fmtDay $s.From}}, {{$s.WindowLabel}}. Hausse du cumul Hermes sur cette fenêtre,
-            ventilée par fournisseur et par modèle.
+            Depuis le {{fmtDay $s.From}}, {{$s.WindowLabel}}. Consommation des sessions Hermes
+            sur cette fenêtre, ventilée par fournisseur et par modèle.
+            Une session à cheval sur le début de la fenêtre est partagée au prorata du temps.
             Le coût d'une personne est la somme de ses modèles.
             Les sessions en tête comptent chaque session une fois ; un modèle compte les sessions qui l'ont utilisé.
             Ce n'est pas le coût Bifrost de la clé Léo.
@@ -759,9 +760,9 @@
           </div>
           <div class="hero-note">
             Depuis le {{fmtDay $s.From}}, {{$s.WindowLabel}}, même fenêtre que Léo.
-            L'historique OpenClaw compte à partir du jour où il a été réimporté dans Hermes.
+            L'historique OpenClaw est compté aux dates des transcriptions.
             La sauvegarde n'avait plus l'index des personnes, donc cet historique tient sur une personne.
-            Ce cumul est celui de state.db, distinct du coût Bifrost.
+            Ce chiffre est celui de state.db, distinct du coût Bifrost.
           </div>
           {{end}}
         {{end}}

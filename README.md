@@ -344,25 +344,26 @@ Trois tableaux, deux horloges, qu'on n'additionne pas :
   cumul. Le $ OpenCode Go est le prix catalogue
   imputé au forfait, pas une facture. Le $ Bedrock est réel. Une clé inconnue
   s'affiche sous son id.
-- **Léo, par personne Telegram.** `increase()` sur `hermes_cost_usd_total`,
-  `hermes_tokens_total` et `hermes_sessions_total` (`agent="leo"`) pour la
-  même fenêtre, avec les labels `provider` et `model` quand l'exporter les
-  publie. Un clic ouvre les fournisseurs, un second les modèles, comme pour
-  Bifrost. Sans ces labels la ligne reste plate. Le cumul vient de `state.db`
-  (`input`, `cache_read`, `cache_write`, `output`), ventilé par la route qui
-  a servi les tokens. La fenêtre est la hausse de ce cumul, pas le total
-  depuis toujours. Le % cache est cache ÷ (tokens in + cache) : ici les
+- **Léo, par personne Telegram.** Valeur courante de `hermes_window_cost_usd`,
+  `hermes_window_tokens` et `hermes_window_sessions` (`agent="leo"`,
+  `window` = la durée choisie). L'exporteur somme les sessions dont les dates
+  tombent dans la fenêtre. Une session à cheval sur le début est partagée au
+  prorata du temps. Les labels `provider` et `model` sont là quand l'exporter
+  les publie. Un clic ouvre les fournisseurs, un second les modèles, comme
+  pour Bifrost. Sans ces labels la ligne reste plate. Les tokens viennent de
+  `state.db` (`input`, `cache_read`, `cache_write`, `output`), ventilés par
+  la route qui a servi. Le % cache est cache ÷ (tokens in + cache) : ici les
   tokens in n'incluent pas le cache. Les sessions en tête de personne comptent
   chaque session une fois ; un modèle compte les sessions qui l'ont utilisé.
-  Cron, API et TUI tiennent sur une ligne « hors Telegram ». Ce cumul n'est
+  Cron, API et TUI tiennent sur une ligne « hors Telegram ». Ce chiffre n'est
   pas le coût Bifrost de la clé `hermes-leo`.
 - **Léa, Hermes.** Même fenêtre et même forme, sur `agent="lea"`. Les
   personnes Telegram restent séparées. L'historique OpenClaw réimporté dans
-  `state.db` (source `openclaw`) apparaît comme une personne, avec fournisseur
-  Bedrock et le modèle. Il compte dans la fenêtre qui contient le jour de
-  l'import. Son coût est le prix catalogue Bedrock recalculé sur les tokens
-  des transcriptions. Cron et le reste tiennent sur « hors Telegram ». Ce
-  cumul n'est pas le coût Bifrost de la clé `hermes-lea`.
+  `state.db` (source `openclaw`) est compté aux dates des transcriptions, pas
+  au jour de l'import. Il apparaît comme une personne, avec fournisseur
+  Bedrock et le modèle. Son coût est le prix catalogue Bedrock recalculé sur
+  les tokens. Cron et le reste tiennent sur « hors Telegram ». Ce chiffre
+  n'est pas le coût Bifrost de la clé `hermes-lea`.
 
 Les noms Telegram viennent de Prometheus au moment du rendu. Ils ne sont pas
 dans ce dépôt. Le cache est le même `CACHE_TTL` que le reste de la page.

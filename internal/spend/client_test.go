@@ -34,20 +34,20 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 			fmt.Fprint(w, vector(
 				series(10800000, "virtual_key_name", "hermes-lea", "provider", "bedrock", "model", "claude-opus-5-5"),
 			))
-		case strings.Contains(q, `agent="lea"`) && strings.Contains(q, "hermes_cost_usd_total"):
+		case strings.Contains(q, `agent="lea"`) && strings.Contains(q, "hermes_window_cost_usd"):
 			fmt.Fprint(w, vector(
 				series(12.5, "source", "openclaw", "user", "Léa", "provider", "bedrock", "model", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
 			))
-		case strings.Contains(q, `agent="lea"`) && strings.Contains(q, "hermes_tokens_total"):
+		case strings.Contains(q, `agent="lea"`) && strings.Contains(q, "hermes_window_tokens"):
 			fmt.Fprint(w, vector(
 				series(1000, "source", "openclaw", "user", "Léa", "provider", "bedrock", "model", "us.anthropic.claude-sonnet-4-20250514-v1:0", "type", "input"),
 			))
-		case strings.Contains(q, `agent="lea"`) && strings.Contains(q, "hermes_sessions_total"):
+		case strings.Contains(q, `agent="lea"`) && strings.Contains(q, "hermes_window_sessions"):
 			fmt.Fprint(w, vector(
 				series(4, "source", "openclaw", "user", "Léa"),
 				series(2, "source", "cron", "user", "aucun"),
 			))
-		case strings.Contains(q, "hermes_cost_usd_total"):
+		case strings.Contains(q, "hermes_window_cost_usd"):
 			fmt.Fprint(w, vector(
 				series(135, "source", "telegram", "user", "Camille Jullien", "provider", "opencode-go", "model", "deepseek-v4-flash"),
 				series(1000, "source", "telegram", "user", "Camille Jullien"),
@@ -55,7 +55,7 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 				series(3, "source", "cron", "user", "aucun", "provider", "custom", "model", "deepseek-v4-flash"),
 				series(1, "source", "api_server", "user", "aucun", "provider", "opencode-go", "model", "mimo-v2.6-pro"),
 			))
-		case strings.Contains(q, "hermes_tokens_total"):
+		case strings.Contains(q, "hermes_window_tokens"):
 			fmt.Fprint(w, vector(
 				series(1000, "source", "telegram", "user", "Camille Jullien", "provider", "opencode-go", "model", "deepseek-v4-flash", "type", "input"),
 				series(9000, "source", "telegram", "user", "Camille Jullien", "provider", "opencode-go", "model", "deepseek-v4-flash", "type", "cache_read"),
@@ -63,7 +63,7 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 				series(10, "source", "cron", "user", "aucun", "provider", "custom", "model", "deepseek-v4-flash", "type", "input"),
 				series(40, "source", "cron", "user", "aucun", "provider", "custom", "model", "deepseek-v4-flash", "type", "cache_read"),
 			))
-		case strings.Contains(q, "hermes_sessions_total"):
+		case strings.Contains(q, "hermes_window_sessions"):
 			fmt.Fprint(w, vector(
 				series(8, "source", "telegram", "user", "Camille Jullien"),
 				series(5, "source", "telegram", "user", "Camille Jullien", "provider", "opencode-go", "model", "deepseek-v4-flash"),

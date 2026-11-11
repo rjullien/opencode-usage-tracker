@@ -1,10 +1,10 @@
 // Package spend reads per-caller consumption from Prometheus.
 //
-// Bifrost counters (cost, tokens) are reset when the gateway restarts, so the
-// dashboard asks for increase() over a window. Hermes republishes lifetime
-// totals from each agent's state database; increase() over the same window is
-// how much that total grew. The two numbers are different clocks and must not
-// be added together.
+// Bifrost counters (cost, tokens) are reset when the gateway restarts, so
+// those use increase() over the selected span. Hermes window series are
+// already the consumption inside that span, computed from session dates, so
+// they are read as the current sample. The two numbers are different clocks
+// and must not be added together.
 package spend
 
 import (
@@ -145,19 +145,19 @@ func (c *Client) Fetch(id string) *Report {
 	id = NormalizeWindow(id)
 	from, rng, label := windowBounds(now, id)
 	hermes := func(metric, agent string) string {
-		return dedupe + `(increase(` + metric + `{agent="` + agent + `"}[` + rng + `]))`
+		return dedupe + `(` + metric + `{agent="` + agent + `",window="` + id + `"})`
 	}
 	queries := []string{
 		byCaller + `bifrost_cost_total[` + rng + `])))`,
 		byCaller + `bifrost_input_tokens_total[` + rng + `])))`,
 		byCaller + `bifrost_output_tokens_total[` + rng + `])))`,
 		byCaller + `bifrost_cache_read_input_tokens_total[` + rng + `])))`,
-		hermes("hermes_cost_usd_total", "leo"),
-		hermes("hermes_tokens_total", "leo"),
-		hermes("hermes_sessions_total", "leo"),
-		hermes("hermes_cost_usd_total", "lea"),
-		hermes("hermes_tokens_total", "lea"),
-		hermes("hermes_sessions_total", "lea"),
+		hermes("hermes_window_cost_usd", "leo"),
+		hermes("hermes_window_tokens", "leo"),
+		hermes("hermes_window_sessions", "leo"),
+		hermes("hermes_window_cost_usd", "lea"),
+		hermes("hermes_window_tokens", "lea"),
+		hermes("hermes_window_sessions", "lea"),
 	}
 	samples := make([][]sample, len(queries))
 	errs := make([]error, len(queries))
