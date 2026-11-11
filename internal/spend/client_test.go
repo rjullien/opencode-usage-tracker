@@ -83,11 +83,12 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 	if len(r.People) != 3 {
 		t.Fatalf("people = %d, want 3 (%+v)", len(r.People), r.People)
 	}
-	lea := r.People[0]
-	if lea.VirtualKey != "hermes-lea" || lea.Cost != 50 {
-		t.Fatalf("first person = %+v", lea)
+	lea := person(r, "hermes-lea")
+	// The short Bifrost counter (50 $) is replaced by the Hermes window.
+	if lea.VirtualKey != "hermes-lea" || lea.Cost != 12.5 {
+		t.Fatalf("lea = %+v", lea)
 	}
-	if lea.TokensIn != 11300000 || lea.TokensOut != 23000 || lea.CacheRead != 10800000 {
+	if lea.TokensIn != 1000 || lea.TokensOut != 0 || lea.CacheRead != 0 {
 		t.Fatalf("lea tokens = %+v", lea.Totals)
 	}
 	if r.From.Day() != 1 || r.From.Month() != time.Now().Month() {
@@ -96,18 +97,19 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 	if r.Window != "1m" || r.WindowLabel != "1 mois" {
 		t.Fatalf("window = %s %s", r.Window, r.WindowLabel)
 	}
-	if len(lea.Providers) != 1 || lea.Providers[0].Provider != "bedrock" || len(lea.Providers[0].Models) != 1 || lea.Providers[0].Models[0].Model != "claude-opus-5-5" {
+	if len(lea.Providers) != 1 || lea.Providers[0].Provider != "bedrock" || len(lea.Providers[0].Models) != 1 || lea.Providers[0].Models[0].Model != "us.anthropic.claude-sonnet-4-20250514-v1:0" {
 		t.Fatalf("lea tree = %+v", lea.Providers)
 	}
-	if lea.Providers[0].CacheRead != lea.CacheRead || lea.Providers[0].Models[0].CacheRead != lea.CacheRead {
-		t.Fatalf("cache did not roll up: %+v", lea.Providers)
-	}
 	leo := person(r, "hermes-leo")
-	if leo.Cost != 1 || leo.TokensIn != 2000000 || len(leo.Providers) != 1 || len(leo.Providers[0].Models) != 2 {
-		t.Fatalf("leo = %+v models %+v", leo.Totals, leo.Providers)
+	// 135 Camille + 49 Baptiste + 4 hors Telegram. Cache is added back into input.
+	if leo.Cost != 188 || leo.TokensIn != 10050 || leo.TokensOut != 50 || leo.CacheRead != 9040 {
+		t.Fatalf("leo = %+v", leo.Totals)
 	}
-	if leo.Providers[0].Models[0].Model != "deepseek-v4.1-flash" || leo.Providers[0].Models[1].Model != "mimo-v2.6-pro" {
-		t.Fatalf("leo models = %+v", leo.Providers[0].Models)
+	if len(leo.Providers) != 3 || leo.Providers[0].Provider != "opencode-go" || leo.Providers[0].Models[0].Model != "deepseek-v4-flash" {
+		t.Fatalf("leo providers = %+v", leo.Providers)
+	}
+	if emma := person(r, "tailscale-emma"); emma.Cost != 2 {
+		t.Fatalf("emma = %+v", emma)
 	}
 
 	if len(r.Leo) != 2 {

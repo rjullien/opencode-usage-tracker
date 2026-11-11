@@ -343,7 +343,9 @@ Trois tableaux, deux horloges, qu'on n'additionne pas :
   au redémarrage du gateway, donc un redémarrage en cours de fenêtre coupe le
   cumul. Le $ OpenCode Go est le prix catalogue
   imputé au forfait, pas une facture. Le $ Bedrock est réel. Une clé inconnue
-  s'affiche sous son id.
+  s'affiche sous son id. `hermes-lea` et `hermes-leo` ne viennent pas de ces
+  compteurs : elles reprennent la fenêtre Hermes (toutes les personnes de
+  l'agent), parce qu'avant les clés virtuelles Bifrost ne conservait rien.
 - **Léo, par personne Telegram.** Valeur courante de `hermes_window_cost_usd`,
   `hermes_window_tokens` et `hermes_window_sessions` (`agent="leo"`,
   `window` = la durée choisie). L'exporteur somme les sessions dont les dates

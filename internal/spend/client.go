@@ -399,7 +399,109 @@ func assemble(now time.Time, cost, in, out, cache, hCost, hTokens, hSessions, le
 	lea, leaOther := assembleLeo(leaCost, leaTokens, leaSessions, func(source string) bool {
 		return source == "telegram" || source == "openclaw"
 	})
+	// Bifrost did not label traffic by virtual key, and did not keep it, before
+	// monitoring existed. The agent databases are that history, so these two
+	// rows follow the Hermes window instead of the short counter.
+	callers = replaceAgentRow(callers, "hermes-leo", bifrostFromHermes("hermes-leo", leo, other))
+	callers = replaceAgentRow(callers, "hermes-lea", bifrostFromHermes("hermes-lea", lea, leaOther))
+	sort.Slice(callers, func(i, j int) bool {
+		return spendLess(callers[i].Totals, callers[j].Totals, callers[i].VirtualKey, callers[j].VirtualKey)
+	})
 	return &Report{FetchedAt: now, People: callers, Leo: leo, LeoOther: other, Lea: lea, LeaOther: leaOther}
+}
+
+// bifrostFromHermes rolls every person of one agent into the Bifrost table.
+// Hermes keeps cache reads out of input; Bifrost counts them inside input, so
+// the cached tokens are added back here and the cache column stays the subset.
+func bifrostFromHermes(key string, users []LeoUser, other *LeoUser) PersonSpend {
+	all := make([]LeoUser, 0, len(users)+1)
+	all = append(all, users...)
+	if other != nil {
+		all = append(all, *other)
+	}
+	type modelBucket struct{ Totals }
+	type providerBucket struct {
+		Totals
+		models map[string]*modelBucket
+	}
+	providers := map[string]*providerBucket{}
+	var total, covered Totals
+	add := func(into *Totals, cost, in, out, cacheRead float64) {
+		into.Cost += cost
+		into.TokensOut += out
+		into.CacheRead += cacheRead
+		into.TokensIn += in + cacheRead
+	}
+	for _, user := range all {
+		add(&total, user.CostUSD, user.TokensIn, user.TokensOut, user.CacheRead)
+		for _, prov := range user.Providers {
+			name := strings.TrimSpace(prov.Provider)
+			if name == "" {
+				name = "inconnu"
+			}
+			dst, ok := providers[name]
+			if !ok {
+				dst = &providerBucket{models: map[string]*modelBucket{}}
+				providers[name] = dst
+			}
+			add(&dst.Totals, prov.CostUSD, prov.TokensIn, prov.TokensOut, prov.CacheRead)
+			add(&covered, prov.CostUSD, prov.TokensIn, prov.TokensOut, prov.CacheRead)
+			for _, mod := range prov.Models {
+				model := strings.TrimSpace(mod.Model)
+				if model == "" {
+					model = "inconnu"
+				}
+				mb, ok := dst.models[model]
+				if !ok {
+					mb = &modelBucket{}
+					dst.models[model] = mb
+				}
+				add(&mb.Totals, mod.CostUSD, mod.TokensIn, mod.TokensOut, mod.CacheRead)
+			}
+		}
+	}
+	if gap := total.Cost - covered.Cost; gap > 0.000001 || total.TokensIn-covered.TokensIn > 0.5 {
+		dst, ok := providers["inconnu"]
+		if !ok {
+			dst = &providerBucket{models: map[string]*modelBucket{}}
+			providers["inconnu"] = dst
+		}
+		add(&dst.Totals, total.Cost-covered.Cost, total.TokensIn-covered.TokensIn-(total.CacheRead-covered.CacheRead), total.TokensOut-covered.TokensOut, total.CacheRead-covered.CacheRead)
+	}
+	row := PersonSpend{VirtualKey: key, Totals: total}
+	for name, prov := range providers {
+		if prov.zero() {
+			continue
+		}
+		prow := ProviderSpend{Provider: name, Totals: prov.Totals}
+		for model, mod := range prov.models {
+			if mod.zero() {
+				continue
+			}
+			prow.Models = append(prow.Models, ModelSpend{Model: model, Totals: mod.Totals})
+		}
+		sort.Slice(prow.Models, func(i, j int) bool {
+			return spendLess(prow.Models[i].Totals, prow.Models[j].Totals, prow.Models[i].Model, prow.Models[j].Model)
+		})
+		row.Providers = append(row.Providers, prow)
+	}
+	sort.Slice(row.Providers, func(i, j int) bool {
+		return spendLess(row.Providers[i].Totals, row.Providers[j].Totals, row.Providers[i].Provider, row.Providers[j].Provider)
+	})
+	return row
+}
+
+func replaceAgentRow(callers []PersonSpend, key string, row PersonSpend) []PersonSpend {
+	if row.zero() {
+		return callers
+	}
+	for i := range callers {
+		if callers[i].VirtualKey == key {
+			callers[i] = row
+			return callers
+		}
+	}
+	return append(callers, row)
 }
 
 // assembleLeo builds one agent's tree. keepSource decides which sources stay
