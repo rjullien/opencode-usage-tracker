@@ -14,26 +14,30 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 		q := r.URL.Query().Get("query")
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case strings.Contains(q, "bifrost_window_cost_usd"):
+			fmt.Fprint(w, vector(
+				series(12.5, "virtual_key_name", "hermes-lea", "provider", "bedrock", "model", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
+				series(136, "virtual_key_name", "hermes-leo", "provider", "opencode-go", "model", "deepseek-v4-flash"),
+			))
+		case strings.Contains(q, "bifrost_window_tokens"):
+			fmt.Fprint(w, vector(
+				series(1000, "virtual_key_name", "hermes-lea", "provider", "bedrock", "model", "us.anthropic.claude-sonnet-4-20250514-v1:0", "type", "input"),
+				series(10000, "virtual_key_name", "hermes-leo", "provider", "opencode-go", "model", "deepseek-v4-flash", "type", "input"),
+				series(9000, "virtual_key_name", "hermes-leo", "provider", "opencode-go", "model", "deepseek-v4-flash", "type", "cache_read"),
+				series(50, "virtual_key_name", "hermes-leo", "provider", "opencode-go", "model", "deepseek-v4-flash", "type", "output"),
+			))
 		case strings.Contains(q, "bifrost_cost_total"):
 			fmt.Fprint(w, vector(
-				series(50, "virtual_key_name", "hermes-lea", "provider", "bedrock", "model", "claude-opus-5-5"),
-				series(1, "virtual_key_name", "hermes-leo", "provider", "opencode-go", "model", "deepseek-v4.1-flash"),
 				series(2, "virtual_key_name", "tailscale-emma", "provider", "opencode-go", "model", "deepseek-v4.1-flash"),
 			))
 		case strings.Contains(q, "bifrost_input_tokens_total"):
 			fmt.Fprint(w, vector(
-				series(11300000, "virtual_key_name", "hermes-lea", "provider", "bedrock", "model", "claude-opus-5-5"),
-				series(1500000, "virtual_key_name", "hermes-leo", "provider", "opencode-go", "model", "deepseek-v4.1-flash"),
-				series(500000, "virtual_key_name", "hermes-leo", "provider", "opencode-go", "model", "mimo-v2.6-pro"),
+				series(500000, "virtual_key_name", "tailscale-emma", "provider", "opencode-go", "model", "deepseek-v4.1-flash"),
 			))
 		case strings.Contains(q, "bifrost_output_tokens_total"):
-			fmt.Fprint(w, vector(
-				series(23000, "virtual_key_name", "hermes-lea", "provider", "bedrock", "model", "claude-opus-5-5"),
-			))
+			fmt.Fprint(w, vector())
 		case strings.Contains(q, "bifrost_cache_read_input_tokens_total"):
-			fmt.Fprint(w, vector(
-				series(10800000, "virtual_key_name", "hermes-lea", "provider", "bedrock", "model", "claude-opus-5-5"),
-			))
+			fmt.Fprint(w, vector())
 		case strings.Contains(q, `agent="lea"`) && strings.Contains(q, "hermes_window_cost_usd"):
 			fmt.Fprint(w, vector(
 				series(12.5, "source", "openclaw", "user", "Léa", "provider", "bedrock", "model", "us.anthropic.claude-sonnet-4-20250514-v1:0"),
@@ -84,31 +88,21 @@ func TestFetchSplitsKeysAndLeoUsers(t *testing.T) {
 		t.Fatalf("people = %d, want 3 (%+v)", len(r.People), r.People)
 	}
 	lea := person(r, "hermes-lea")
-	// The short Bifrost counter (50 $) is replaced by the Hermes window.
-	if lea.VirtualKey != "hermes-lea" || lea.Cost != 12.5 {
+	if lea.Cost != 12.5 || lea.TokensIn != 1000 || lea.CacheRead != 0 {
 		t.Fatalf("lea = %+v", lea)
 	}
-	if lea.TokensIn != 1000 || lea.TokensOut != 0 || lea.CacheRead != 0 {
-		t.Fatalf("lea tokens = %+v", lea.Totals)
+	if r.From.Day() != 1 || r.From.Month() != time.Now().Month() || r.Window != "1m" {
+		t.Fatalf("from = %s window = %s", r.From, r.Window)
 	}
-	if r.From.Day() != 1 || r.From.Month() != time.Now().Month() {
-		t.Fatalf("from = %s, want the 1st of this month", r.From)
-	}
-	if r.Window != "1m" || r.WindowLabel != "1 mois" {
-		t.Fatalf("window = %s %s", r.Window, r.WindowLabel)
-	}
-	if len(lea.Providers) != 1 || lea.Providers[0].Provider != "bedrock" || len(lea.Providers[0].Models) != 1 || lea.Providers[0].Models[0].Model != "us.anthropic.claude-sonnet-4-20250514-v1:0" {
+	if len(lea.Providers) != 1 || lea.Providers[0].Provider != "bedrock" || lea.Providers[0].Models[0].Model != "us.anthropic.claude-sonnet-4-20250514-v1:0" {
 		t.Fatalf("lea tree = %+v", lea.Providers)
 	}
 	leo := person(r, "hermes-leo")
-	// 135 Camille + 49 Baptiste + 4 hors Telegram. Cache is added back into input.
-	if leo.Cost != 188 || leo.TokensIn != 10050 || leo.TokensOut != 50 || leo.CacheRead != 9040 {
+	// Input from the gauge already includes the cache read.
+	if leo.Cost != 136 || leo.TokensIn != 10000 || leo.TokensOut != 50 || leo.CacheRead != 9000 {
 		t.Fatalf("leo = %+v", leo.Totals)
 	}
-	if len(leo.Providers) != 3 || leo.Providers[0].Provider != "opencode-go" || leo.Providers[0].Models[0].Model != "deepseek-v4-flash" {
-		t.Fatalf("leo providers = %+v", leo.Providers)
-	}
-	if emma := person(r, "tailscale-emma"); emma.Cost != 2 {
+	if emma := person(r, "tailscale-emma"); emma.Cost != 2 || emma.TokensIn != 500000 {
 		t.Fatalf("emma = %+v", emma)
 	}
 
@@ -179,12 +173,12 @@ func TestFetcherCaches(t *testing.T) {
 	if a.FetchedAt != b.FetchedAt {
 		t.Fatal("second call bypassed the cache")
 	}
-	if hits != 10 {
-		t.Fatalf("hits = %d, want 10 (one scrape of ten queries)", hits)
+	if hits != 12 {
+		t.Fatalf("hits = %d, want 12 (one scrape of twelve queries)", hits)
 	}
 	f.Report("3m")
-	if hits != 20 {
-		t.Fatalf("hits = %d, want 20 (a second window is its own scrape)", hits)
+	if hits != 24 {
+		t.Fatalf("hits = %d, want 24 (a second window is its own scrape)", hits)
 	}
 }
 

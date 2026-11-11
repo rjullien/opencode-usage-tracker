@@ -148,10 +148,12 @@ func (c *Client) Fetch(id string) *Report {
 		return dedupe + `(` + metric + `{agent="` + agent + `",window="` + id + `"})`
 	}
 	queries := []string{
-		byCaller + `bifrost_cost_total[` + rng + `])))`,
-		byCaller + `bifrost_input_tokens_total[` + rng + `])))`,
-		byCaller + `bifrost_output_tokens_total[` + rng + `])))`,
-		byCaller + `bifrost_cache_read_input_tokens_total[` + rng + `])))`,
+		byCaller + `bifrost_cost_total{virtual_key_name!~"hermes-lea|hermes-leo"}[` + rng + `])))`,
+		byCaller + `bifrost_input_tokens_total{virtual_key_name!~"hermes-lea|hermes-leo"}[` + rng + `])))`,
+		byCaller + `bifrost_output_tokens_total{virtual_key_name!~"hermes-lea|hermes-leo"}[` + rng + `])))`,
+		byCaller + `bifrost_cache_read_input_tokens_total{virtual_key_name!~"hermes-lea|hermes-leo"}[` + rng + `])))`,
+		dedupe + `(bifrost_window_cost_usd{window="` + id + `"})`,
+		dedupe + `(bifrost_window_tokens{window="` + id + `"})`,
 		hermes("hermes_window_cost_usd", "leo"),
 		hermes("hermes_window_tokens", "leo"),
 		hermes("hermes_window_sessions", "leo"),
@@ -177,11 +179,51 @@ func (c *Client) Fetch(id string) *Report {
 			return &Report{FetchedAt: now, From: from, Window: id, WindowLabel: label, Error: err.Error()}
 		}
 	}
-	rep := assemble(now, samples[0], samples[1], samples[2], samples[3], samples[4], samples[5], samples[6], samples[7], samples[8], samples[9])
+	cost, in, out, cache := mergeBifrost(samples[0], samples[1], samples[2], samples[3], samples[4], samples[5])
+	rep := assemble(now, cost, in, out, cache, samples[6], samples[7], samples[8], samples[9], samples[10], samples[11])
+	if !hasVirtualKey(samples[4], "hermes-leo") {
+		rep.People = replaceAgentRow(rep.People, "hermes-leo", bifrostFromHermes("hermes-leo", rep.Leo, rep.LeoOther))
+	}
+	if !hasVirtualKey(samples[4], "hermes-lea") {
+		rep.People = replaceAgentRow(rep.People, "hermes-lea", bifrostFromHermes("hermes-lea", rep.Lea, rep.LeaOther))
+	}
+	sort.Slice(rep.People, func(i, j int) bool {
+		return spendLess(rep.People[i].Totals, rep.People[j].Totals, rep.People[i].VirtualKey, rep.People[j].VirtualKey)
+	})
 	rep.From = from
 	rep.Window = id
 	rep.WindowLabel = label
 	return rep
+}
+
+// mergeBifrost appends the window gauges (history from Hermes, Bifrost shape)
+// to the live counters. Input, output and cache read arrive on one tokens
+// series distinguished by type.
+func mergeBifrost(cost, in, out, cache, windowCost, windowTokens []sample) (c, i, o, r []sample) {
+	c = append(append([]sample{}, cost...), windowCost...)
+	i = append([]sample{}, in...)
+	o = append([]sample{}, out...)
+	r = append([]sample{}, cache...)
+	for _, s := range windowTokens {
+		switch s.labels["type"] {
+		case "input":
+			i = append(i, s)
+		case "output":
+			o = append(o, s)
+		case "cache_read":
+			r = append(r, s)
+		}
+	}
+	return c, i, o, r
+}
+
+func hasVirtualKey(samples []sample, key string) bool {
+	for _, s := range samples {
+		if strings.TrimSpace(s.labels["virtual_key_name"]) == key {
+			return true
+		}
+	}
+	return false
 }
 
 // NormalizeWindow accepts the selector values. Anything else is one month.
@@ -398,14 +440,6 @@ func assemble(now time.Time, cost, in, out, cache, hCost, hTokens, hSessions, le
 	leo, other := assembleLeo(hCost, hTokens, hSessions, func(source string) bool { return source == "telegram" })
 	lea, leaOther := assembleLeo(leaCost, leaTokens, leaSessions, func(source string) bool {
 		return source == "telegram" || source == "openclaw"
-	})
-	// Bifrost did not label traffic by virtual key, and did not keep it, before
-	// monitoring existed. The agent databases are that history, so these two
-	// rows follow the Hermes window instead of the short counter.
-	callers = replaceAgentRow(callers, "hermes-leo", bifrostFromHermes("hermes-leo", leo, other))
-	callers = replaceAgentRow(callers, "hermes-lea", bifrostFromHermes("hermes-lea", lea, leaOther))
-	sort.Slice(callers, func(i, j int) bool {
-		return spendLess(callers[i].Totals, callers[j].Totals, callers[i].VirtualKey, callers[j].VirtualKey)
 	})
 	return &Report{FetchedAt: now, People: callers, Leo: leo, LeoOther: other, Lea: lea, LeaOther: leaOther}
 }
